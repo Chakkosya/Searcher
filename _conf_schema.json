@@ -7,7 +7,7 @@
   "trigger_keywords": {
     "description": "触发五引擎搜图的关键词",
     "type": "list",
-    "default": ["以图搜图", "找鸡"]
+    "default": ["以图搜图", "找鸡", "搜图"]
   },
   "allow_third_party_image_host": {
     "description": "允许 Google Lens 和 Yandex 使用临时图床搜索本地图片",

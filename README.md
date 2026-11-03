@@ -4,7 +4,7 @@ AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、
 
 ## 安装
 
-使用 AstrBot 4.23.2 或更新版本。将本仓库目录放到 AstrBot 的 `data/plugins/reverse_searcher_top3`，安装 `requirements.txt` 中的依赖并重启 AstrBot。可直接发送“以图搜图”或“找鸡”加图片，也可回复一条含图片的消息。自然语言询问图片时，LLM 可调用 `reverse_search_top3` 工具。
+使用 AstrBot 4.23.2 或更新版本。将本仓库目录放到 AstrBot 的 `data/plugins/reverse_searcher_top3`，安装 `requirements.txt` 中的依赖并重启 AstrBot。可直接发送“以图搜图”“找鸡”或“搜图”加图片，也可回复一条含图片的消息提问。先发“搜图”、下一条单独发图片也会搜索；等待两分钟，按同一会话和发送者承接。带图提问涉及出处、名字、账号、角色或相似图片时，插件会直接搜索；其他图片提问仍可由 LLM 调用 `reverse_search_top3` 工具。
 
 关键词入口会先发送“正在全网找图”，然后发送前三条结果。结果文字和预览图按名次交替排列。预览优先使用引擎给出的原图地址，失败时使用缩略图。
 
@@ -18,7 +18,7 @@ AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、
 - `yandex_cookies`：Yandex 出现验证码时填写。
 - `ehentai_cookies`：需要登录搜索时填写。
 - `allow_third_party_image_host`：Google Lens 和 Yandex 搜索消息图片时需先把图片上传到临时图床；默认开启。
-- `trigger_keywords`：默认 `以图搜图`、`找鸡`。
+- `trigger_keywords`：默认 `以图搜图`、`找鸡`、`搜图`。
 
 五个引擎会并发尝试。未配置 Google Key、遭遇验证码或某个引擎出错时，其余引擎仍返回结果，消息末尾列出未完成的引擎。
 
@@ -31,6 +31,7 @@ AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、
 - 五个引擎的相似度含义不同，前三条是按可用证据排序的候选结果，不能把它们当作统一概率。名称与账号只取搜索结果明确给出的字段或页面地址中的公开账号路径。
 - 部分引擎只提供缩略图，或预览图地址无法下载，此时该条结果会显示“预览图：暂无”。
 - Google Lens 需要有效 Key。Yandex 的网页结果可能受到验证码或页面改版影响。
+- 引用消息需由平台适配器提供被引用的图片组件；引用内容无法读取时，请重新发送图片。
 
 ## 来源与许可
 

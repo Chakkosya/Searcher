@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -22,6 +23,14 @@ REFUSAL = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 IMAGE_URL = re.compile(r"https?://[^\s<>]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>]*)?", re.I)
+SEARCH_INTENT = re.compile(
+    r"搜图|找图|找鸡|识图|反向搜索|出处|来源|原图|画师|作者|账号|用户名|"
+    r"名字|角色|是谁|哪位|哪个平台|同款|相似|"
+    r"(?:找|搜).{0,8}(?:一下|这个人|这张图|图片)|"
+    r"reverse image|image source|who is this",
+    re.I,
+)
+PENDING_SECONDS = 120
 
 
 def image_ref_from_event(event: AstrMessageEvent) -> str | None:
@@ -51,17 +60,30 @@ class ReverseSearcherTop3(Star):
         self.search_tool = ReverseSearchTool()
         self.search_tool.inject_service(self.search_service)
         self.context.add_llm_tools(self.search_tool)
+        self.pending_search: dict[tuple[str, str], float] = {}
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def keyword_search(self, event: AstrMessageEvent):
         text = getattr(event.message_obj, "message_str", "") or ""
-        triggers = self.config.get("trigger_keywords") or ["以图搜图", "找鸡"]
-        if not any(word in text for word in triggers):
+        image_ref = image_ref_from_event(event)
+        triggers = self.config.get("trigger_keywords") or ["以图搜图", "找鸡", "搜图"]
+        explicit = text.strip() == "搜图" or any(word and word in text for word in triggers)
+        key = (event.unified_msg_origin, event.get_sender_id())
+        pending_at = self.pending_search.pop(key, None)
+        followup = pending_at is not None and time.monotonic() - pending_at <= PENDING_SECONDS and bool(image_ref)
+        image_question = bool(image_ref) and bool(SEARCH_INTENT.search(text))
+        if not (explicit or followup or image_question):
             return
         event.stop_event()
-        image_ref = image_ref_from_event(event)
         if not image_ref:
-            yield event.plain_result("请附上图片，或回复一条含图片的消息。")
+            now = time.monotonic()
+            self.pending_search = {
+                pending_key: started
+                for pending_key, started in self.pending_search.items()
+                if now - started <= PENDING_SECONDS
+            }
+            self.pending_search[key] = now
+            yield event.plain_result("请在下一条消息发送图片，或回复一条含图片的消息（两分钟内有效）。")
             return
         await event.send(event.plain_result("🔍 正在全网找图，请稍候…"))
         try:
