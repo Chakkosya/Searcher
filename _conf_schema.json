@@ -1,6 +1,6 @@
 {
   "ranking_provider_id": {
-    "description": "复核搜图候选的 AstrBot 模型供应商；留空则使用当前会话模型",
+    "description": "用于图片路由、匹配复核和回复文案的 AstrBot 模型；推荐支持图片，留空使用当前会话模型",
     "type": "string",
     "default": "",
     "_special": "select_provider"
@@ -13,69 +13,71 @@
   "trigger_keywords": {
     "description": "唤醒 AI 判断是否搜图的关键词",
     "type": "list",
-    "default": ["以图搜图", "找鸡", "搜图"]
+    "default": [
+      "以图搜图",
+      "找鸡",
+      "搜图"
+    ]
   },
   "keyword_image_wait_seconds": {
     "description": "关键词触发后等待下一张图片的秒数",
     "type": "int",
     "default": 120,
-    "slider": {"min": 1, "max": 600, "step": 1}
+    "slider": {
+      "min": 1,
+      "max": 600,
+      "step": 1
+    }
   },
   "keyword_image_wait_prompt": {
-    "description": "关键词触发后等待图片的提示，可使用 {seconds}",
+    "description": "关键词触发后请用户补图的 AI 提示词；实际等待秒数自动提供给模型",
     "type": "text",
-    "default": "请在 {seconds} 秒内发送图片，或回复一条含图片的消息。"
+    "default": "用一句亲切的话请用户在指定时间内发送图片，也可以引用含图片的消息。"
   },
   "ai_image_wait_seconds": {
     "description": "AI 调用搜图工具但没有图片时等待下一张图片的秒数",
     "type": "int",
     "default": 120,
-    "slider": {"min": 1, "max": 600, "step": 1}
+    "slider": {
+      "min": 1,
+      "max": 600,
+      "step": 1
+    }
   },
   "ai_image_wait_prompt": {
-    "description": "AI 触发后等待图片的提示，可使用 {seconds}",
+    "description": "AI 触发后请用户补图的 AI 提示词；实际等待秒数自动提供给模型",
     "type": "text",
-    "default": "我可以帮你找图。请在 {seconds} 秒内发送图片。"
+    "default": "自然地回应用户的搜图需求，请他在指定时间内补充图片。"
   },
   "search_progress_prompt": {
-    "description": "开始搜索时发送的提示，留空则不发送",
-    "type": "string",
-    "default": "🔍 正在全网找图，请稍候..."
+    "description": "搜索等待语的 AI 提示词；留空不发送等待提示",
+    "type": "text",
+    "default": "用一句简短的话说明正在查找图片线索，请稍候。可以带一个放大镜表情。"
   },
   "result_header_template": {
-    "description": "结果标题，可使用 {query}、{count}",
+    "description": "结果标题的 AI 写作提示词",
     "type": "text",
-    "default": "🎯 **找图结果**"
+    "default": "用 🎯 和简短标题引出找图结果。"
   },
   "result_item_template": {
-    "description": "每条结果的文字模板，字段见 README；预览图固定接在该条文字后",
+    "description": "每条候选的 AI 写作提示词；预览图自动附在对应文字后",
     "type": "text",
-    "default": "\n\n{rank_symbol} 🌐 平台：{platform}\n🔎 匹配：{match}\n🔑 关键词：{keyword}{name_line}{account_line}"
+    "default": "每条候选分行写：🌐 平台、🔎 匹配、🔑 关键词；有数据才写 👤 名字、🆔 账号。语言简洁，预览图会自动附在文字后。"
   },
   "result_footer_template": {
-    "description": "结果结尾，可使用 {query}、{count}",
+    "description": "结果结尾的 AI 写作提示词",
     "type": "text",
-    "default": "\n\n⚠️ 识图存在误差，请自行核对哦～"
-  },
-  "result_engine_summary_template": {
-    "description": "五个引擎的候选数量，可使用 {engine_counts}；留空则不显示",
-    "type": "text",
-    "default": "\n\n📡 五引擎候选：{engine_counts}"
+    "default": "用一句轻松的话提醒识图可能有误，需要对照原图核实。"
   },
   "result_empty_text": {
-    "description": "没有匹配结果时的回复文字",
+    "description": "没有候选时的 AI 写作提示词",
     "type": "text",
-    "default": "🎯 **找图结果**\n\n暂时没有找到可信的匹配结果。"
+    "default": "如实说明本次没有找到可用的图片候选。"
   },
   "result_no_preview_text": {
-    "description": "某条结果没有可用预览图时的文字",
-    "type": "string",
-    "default": "\n预览图：暂无"
-  },
-  "result_failures_template": {
-    "description": "部分引擎未完成时的文字，可使用 {failures}",
+    "description": "预览不可用时的 AI 写作提示词",
     "type": "text",
-    "default": "\n未完成的引擎：{failures}"
+    "default": "该条预览不可用时，简短说明没有预览图。"
   },
   "allow_third_party_image_host": {
     "description": "允许 Google Lens 和 Yandex 使用临时图床搜索本地图片",
@@ -106,5 +108,20 @@
     "description": "E-Hentai Cookie（可选）",
     "type": "string",
     "default": ""
+  },
+  "result_followup_prompt": {
+    "type": "text",
+    "default": "用一句话提醒用户可以追问某个引擎的全部候选，例如“把 Yandex 的全部结果给我”；也可以指定其他引擎补搜。",
+    "description": "提醒用户查看某引擎全部候选或指定引擎补搜的 AI 提示词"
+  },
+  "candidate_cache_seconds": {
+    "description": "同一会话、同一发送者可追问上次搜图候选的有效秒数；重启后缓存清空",
+    "type": "int",
+    "default": 600,
+    "slider": {
+      "min": 60,
+      "max": 3600,
+      "step": 60
+    }
   }
 }

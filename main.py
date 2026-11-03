@@ -1,4 +1,4 @@
-"""AstrBot entry point for five-engine reverse image search."""
+"""AstrBot entry point for intent-routed reverse image search."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
-from .reverse_searcher.search import SearchService
+from .reverse_searcher.search import LABELS, SearchService
 from .reverse_searcher.tool import ReverseSearchTool
 
 REFUSAL = re.compile(
@@ -27,6 +27,19 @@ IMAGE_FOLLOWUP = re.compile(r"图片|这张图|那张图|这张呢|那张呢|同
 SHORT_IMAGE_FOLLOWUP = re.compile(r"^(?:这|那)(?:张|个)(?:图|图片)?(?:呢|怎么样|如何|也查一下)?[？?]?$")
 SEARCH_REFUSAL = re.compile(r"(?:不能|无法|没法|不方便).{0,30}(?:找|查|提供|辨认).{0,20}(?:出处|来源|原图|图源|链接|角色|人物|作品|影片)")
 RECENT_IMAGE_SECONDS = 120
+ENGINE_ALIASES = {
+    "animetrace": r"animetrace|anime trace",
+    "saucenao": r"saucenao|sauce nao",
+    "ehentai": r"e[- ]?hentai|eh站|e站",
+    "google": r"google(?: lens)?|谷歌",
+    "yandex": r"yandex|yadex|毛子",
+}
+
+
+def candidate_engine(text: str) -> str:
+    if not re.search(r"全部|所有|候选|结果|补搜|搜一下|换|用.*搜", text):
+        return ""
+    return next((name for name, pattern in ENGINE_ALIASES.items() if re.search(pattern, text, re.I)), "")
 
 
 def image_component_from_event(event: AstrMessageEvent) -> AstrImage | None:
@@ -96,6 +109,9 @@ class ReverseSearcherTop3(Star):
         has_image = bool(image_ref or image_component)
         key = (event.unified_msg_origin, event.get_sender_id())
         now = time.monotonic()
+        engine = candidate_engine(text)
+        if engine and self.search_service.session(key):
+            event.set_extra("reverse_search_candidate_engine", engine)
         if has_image:
             self.recent_images = {
                 recent_key: recent
@@ -125,7 +141,8 @@ class ReverseSearcherTop3(Star):
             event.set_extra("reverse_search_query", pending[1])
         if not (explicit or followup):
             return
-        if not (has_image or event.get_extra("reverse_search_image_ref") or event.get_extra("reverse_search_image_component")):
+        if not (has_image or event.get_extra("reverse_search_image_ref") or event.get_extra("reverse_search_image_component")
+                or event.get_extra("reverse_search_candidate_engine")):
             event.stop_event()
             seconds = max(1, int(self.config.get("keyword_image_wait_seconds", 120)))
             self.pending_search = {
@@ -133,8 +150,10 @@ class ReverseSearcherTop3(Star):
                 if state[0] >= now
             }
             self.pending_search[key] = (now + seconds, text)
-            prompt = self.config.get("keyword_image_wait_prompt", "请在 {seconds} 秒内发送图片，或回复一条含图片的消息。")
-            yield event.plain_result(prompt.replace("{seconds}", str(seconds)))
+            prompt = await self.search_service.notice("keyword_image_wait_prompt", self.context,
+                                                      event.unified_msg_origin, seconds=seconds, query=text)
+            self.pending_search[key] = (time.monotonic() + seconds, text)
+            yield event.plain_result(prompt)
             return
         event.is_at_or_wake_command = True
         event.set_extra("reverse_search_requested", True)
@@ -143,6 +162,14 @@ class ReverseSearcherTop3(Star):
 
     @filter.on_llm_request()
     async def add_followup_context(self, event, req):
+        cached = self.search_service.session((event.unified_msg_origin, event.get_sender_id()))
+        if cached:
+            engines = "、".join(LABELS[name] for name in cached.report.counts)
+            req.extra_user_content_parts.append(TextPart(text=(
+                f"该发送者上次搜图已缓存，搜索过的引擎：{engines}。用户追问某个引擎的全部候选时，"
+                "调用 reverse_search_top3，传入 engine 和 show_all=true；也可用同一张图指定其他引擎补搜。"
+                "只有用户提出检索或候选追问才调用。"
+            )).mark_as_temp())
         if event.get_extra("reverse_search_followup"):
             event.set_extra("reverse_search_followup", False)
             req.extra_user_content_parts.append(
@@ -165,6 +192,7 @@ class ReverseSearcherTop3(Star):
                 chat_provider_id=provider_id,
                 prompt=(
                     "判断这条用户请求是否要求根据图片查找出处、原图、相似图片、作品、角色、人物身份或公开账号。"
+                    "要求查看上次某个引擎的全部候选、换引擎补搜也属于图片检索需求。"
                     "结合最近对话理解‘这张呢’等追问。描述、评价、编辑、翻译图片和普通聊天回答 false。"
                     "助手的拒绝可帮助理解上下文，但不能单独决定。"
                     "只返回 JSON：{\"search\":true} 或 {\"search\":false}。\n最近对话："
@@ -197,14 +225,16 @@ class ReverseSearcherTop3(Star):
                 if state[0] >= now
             }
             self.pending_search[key] = (now + seconds, query)
-            prompt = self.config.get("ai_image_wait_prompt", "我可以帮你找图。请在 {seconds} 秒内发送图片。")
-            wait_text = prompt.replace("{seconds}", str(seconds))
+            wait_text = await self.search_service.notice("ai_image_wait_prompt", self.context,
+                                                         event.unified_msg_origin, seconds=seconds, query=query)
+            self.pending_search[key] = (time.monotonic() + seconds, query)
             replace_final_reply(resp, [Plain(wait_text)])
             if run_context.messages and run_context.messages[-1].role == "assistant":
                 run_context.messages[-1].content = [TextPart(text=wait_text)]
             return
         image_ref = image_ref_from_event(event) or event.get_extra("reverse_search_image_ref")
-        has_image = bool(image_ref or image_component_from_event(event) or event.get_extra("reverse_search_image_component"))
+        has_image = bool(image_ref or image_component_from_event(event) or event.get_extra("reverse_search_image_component")
+                         or event.get_extra("reverse_search_candidate_engine"))
         prepared = event.get_extra("reverse_search_final_chain")
         text = getattr(event.message_obj, "message_str", "") or ""
         if prepared is None and NEGATED_SEARCH.search(text):
@@ -231,7 +261,7 @@ class ReverseSearcherTop3(Star):
                     dialogue = recent_dialogue_text(run_context)
                     if not await self.request_wants_search(text, event.unified_msg_origin, dialogue):
                         return
-            answer = await self.search_tool.call(run_context, image_url=image_ref)
+            answer = await self.search_tool.call(run_context)
             prepared = event.get_extra("reverse_search_final_chain")
             if prepared is None:
                 prepared = [Plain(answer)]

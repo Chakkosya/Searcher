@@ -1,50 +1,97 @@
-# Search Image
+# reverse_searcher
 
-AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、Google Lens 和 Yandex 搜索，每个引擎取前五条候选，交给指定的 AstrBot 模型选择全局前三条。消息包含平台、匹配情况、关键词、名字与账号（有数据时）及预览图；不展示页面链接，也不生成卡片。
+根据用户意图和图片内容选择搜图引擎，复核候选后返回图文结果。支持 AnimeTrace、SauceNAO、E-Hentai、Google Lens 和 Yandex。结果包含平台、关键词、匹配说明、名字与账号（有数据时）及预览图，不展示来源链接。
 
-## 安装
+## 搜索方式
 
-使用 AstrBot 4.23.2 或更新版本。将本仓库目录放到 AstrBot 的 `data/plugins/reverse_searcher`，安装 `requirements.txt` 中的依赖并重启 AstrBot。可直接发送“以图搜图”“找鸡”或“搜图”加图片，也可回复一条含图片的消息提问。也可以先提出搜图要求、再发送图片；等待时长在插件配置中设置，同一会话和发送者的图片会接续该请求。插件提供 `reverse_search_top3` 工具，由 AI 根据用户问题判断是否调用。
+AI 判断用户是否有搜图需求，再结合原图选择引擎：
 
-工具会把五个引擎各自的前五条原始候选交给指定的 AstrBot 模型复核，由模型选出不重复的前三条；结果经 AstrBot 的正常回复流程作为一条图文消息发送，不由工具主动发送最终结果。每条线索后附预览图，优先使用引擎给出的原图地址，失败时使用缩略图。开始搜索时会先发送一条可配置的等待提示。
+| 需求 | 优先引擎 |
+| --- | --- |
+| 这是谁、哪个角色、cos 角色 | AnimeTrace |
+| 插画出处、作者、Pixiv PID | SauceNAO |
+| 相似图、像这个的图片 | Yandex |
+| 本子、同人作品 | E-Hentai |
+| 原图、综合搜索 | Google Lens |
+
+画面也参与判断：普通真人照片、商品、风景、梗图或类型不明确时使用 Google Lens 和 Yandex；不会仅凭暴露衣着或封面排版判定为本子。专门引擎没有结果、请求失败，或模型认为候选与原图不匹配时，也会补搜 Google Lens 和 Yandex。用户明确指定引擎时只查该引擎。
+
+普通结果从本次调用的引擎中选择相关候选，首次最多展示五条，不凑满三条。无法确认出处时，展示 Google Lens 和 Yandex 的可用近似候选并说明不确定性。没有候选的引擎列明数量或失败原因。
+
+统计只包含实际请求过的引擎，例如：
+
+```text
+搜索结果候选：E-Hentai 0 · Google Lens 2 · Yandex 5
+未完成的引擎：E-Hentai：E-Hentai 返回 HTTP 403
+```
+
+## 追问候选
+
+结果末尾会由 AI 提醒可以继续追问，例如：
+
+- “把 Yandex 的全部结果给我”
+- “看看 SauceNAO 的所有候选”
+- “再用 Google 搜一下”
+
+同一会话、同一发送者默认有十分钟的追问时间。已经搜索过的引擎直接展开缓存中的全部候选，不再次请求搜索服务；尚未搜索的引擎会用上次的原图补搜。新图片开始新的搜索，其他人的图片不会接续你的请求。
+
+“全部候选”指该次引擎响应中取得的所有候选，不限三条或五条，不代表自动遍历网站全部分页。SauceNAO 请求最多二十条；其他引擎保留响应中的全部有效候选。普通结果的匹配复核使用各引擎前五条，完整列表保留用于追问。
+
+## 安装与使用
+
+使用 AstrBot 4.23.2 或更新版本。将仓库目录放到 `data/plugins/reverse_searcher`，安装 `requirements.txt` 中的依赖并重启 AstrBot。
+
+可发送“以图搜图”“找鸡”“搜图”加图片，也可引用含图片的消息提问，或先提出搜图要求、下一条再发图片。仅发图片、评价图片、普通聊天不会主动触发搜图。工具名为 `reverse_search_top3`，实际行为按意图路由，不限制返回三条。
+
+结果经过模型复核并生成文字，预览图附在对应条目后，最终通过 AstrBot 正常回复流程作为一条图文消息发送。等待提示是单独的消息。需要关闭 AstrBot 的流式输出及对所有结果启用的分段回复，才能保持完整图文结果在同一条消息里。
 
 ## 配置
 
-在 AstrBot 插件设置中填写：
+- `ranking_provider_id`：选择 AstrBot 已有模型，用于图片路由、候选复核和回复生成；推荐支持图片的模型，留空使用当前会话模型。
+- `serpapi_key` 或 `zenserp_key`：Google Lens 所需，至少配置一个。
+- `saucenao_api_key`：SauceNAO API Key。
+- `proxies`：访问搜索服务的 HTTP 代理地址。
+- `yandex_cookies` / `ehentai_cookies`：对应引擎的 Cookie。
+- `allow_third_party_image_host`：允许 Google Lens、Yandex 将消息图片上传到临时图床；默认开启。图床地址必须实际返回有效图片，否则尝试其他图床。
+- `trigger_keywords`：唤醒 AI 判断搜图需求的关键词。
+- `keyword_image_wait_seconds` / `ai_image_wait_seconds`：两种入口等待下一张图片的秒数，默认各 120 秒。
+- `candidate_cache_seconds`：候选及原图的追问有效时间，默认 600 秒，每次追问后续期。
 
-- `ranking_provider_id`：选择已经在 AstrBot 配好的聊天模型，用于按用户问题复核五个引擎的候选结果；留空使用当前会话模型。支持图像的模型还会收到原图和所有可用的候选预览图。
-- `serpapi_key` 或 `zenserp_key`：Google Lens 所需，二者至少填一个。
-- `saucenao_api_key`：SauceNAO 的 API Key，建议填写。
-- `proxies`：服务器访问这些引擎需要代理时填写。
-- `yandex_cookies`：Yandex 出现验证码时填写。
-- `ehentai_cookies`：需要登录搜索时填写。
-- `allow_third_party_image_host`：Google Lens 和 Yandex 搜索消息图片时需先把图片上传到临时图床；默认开启。
-- `trigger_keywords`：默认 `以图搜图`、`找鸡`、`搜图`。
-- `keyword_image_wait_seconds` / `ai_image_wait_seconds`：关键词或 AI 工具触发后，等待下一张图片的秒数，默认各 120 秒。
-- `keyword_image_wait_prompt` / `ai_image_wait_prompt`：两种入口的等待提示。可写 `{seconds}`，发送时替换为对应秒数。
-- `search_progress_prompt`：开始搜索时发送的等待提示；留空则不发送。
-- `result_header_template` / `result_item_template` / `result_footer_template`：结果标题、每条线索、结尾的文字格式。每条预览图固定跟在该条线索文字后。
-- `result_engine_summary_template`：显示五个引擎各自返回的候选数量；留空则不显示。
-- `result_empty_text` / `result_no_preview_text` / `result_failures_template`：无匹配、无预览图、部分引擎失败时的文字。
+回复配置是给 AI 的提示词，由模型结合当前事实生成文案：
 
-结果模板可使用 `{query}`（用户问题）和 `{count}`（返回条数）。每条线索还可使用 `{rank}`、`{rank_symbol}`、`{platform}`、`{match}`、`{keyword}`、`{name}`、`{account}`、`{name_line}`、`{account_line}`、`{reason}`、`{reason_line}`、`{engines}`。其中 `name_line`、`account_line` 和 `reason_line` 在没有数据时为空。`result_engine_summary_template` 可使用 `{engine_counts}`，`result_failures_template` 可使用 `{failures}`。要显示字面量大括号，写成 `{{` 和 `}}`。
+| 配置项 | 控制内容 |
+| --- | --- |
+| `keyword_image_wait_prompt` | 关键词触发后请用户补图 |
+| `ai_image_wait_prompt` | AI 调用工具后请用户补图 |
+| `search_progress_prompt` | 搜索时的等待语；留空不发送 |
+| `result_header_template` | 结果标题 |
+| `result_item_template` | 每条候选的措辞和排列方式 |
+| `result_footer_template` | 结果结尾 |
+| `result_empty_text` | 没有候选时的说明 |
+| `result_no_preview_text` | 预览不可用时的说明 |
+| `result_followup_prompt` | 查看全部候选或指定引擎补搜的提醒 |
 
-五个引擎会并发尝试。Google Lens 和 Yandex 搜索本地图片前会使用临时图床；插件会读取上传后的地址，确认拿到的确实是图片，再交给搜索引擎。未配置 Google Key、图床只返回 HTML、遭遇验证码或某个引擎出错时，其余引擎仍返回结果。消息末尾分别列出各引擎候选数与未完成原因；E-Hentai 等引擎的 HTTP 错误不会再显示成普通的零匹配。模型未返回有效的前三条选择时，插件会说明复核失败，不会自行挑选前三条。
+例如等待语提示词可写“用一句俏皮的话让用户等一下，带一个放大镜表情”；结果提示词可写“分行列出平台、匹配情况和关键词，有名字与账号时补上，语气简洁”。实际等待秒数、候选数据和缓存时长会自动提供给模型。
+
+等待语、结果标题、条目和结尾的配置键保留，内容作为写作要求或风格参考交给模型，不再直接格式化发送。名称仍带 `_template` 的配置项也按提示词处理。候选数量及失败原因由程序准确附加，使用固定标题“搜索结果候选：”和“未完成的引擎：”。
 
 ## 拒绝后的搜图
 
-AI 会先判断是否调用工具。只有带图片的搜图需求被 LLM 以拒绝语句结束，插件才会补调 `reverse_search_top3`：明确的搜图关键词直接作为需求依据，其余请求由所选模型结合最近对话判断。像“这张呢”这样的短追问，如果 AI 明确拒绝查找出处，也会补调搜图。普通图片聊天不会因 AI 拒绝而触发搜图。AI 调用工具时若当前没有图片，会按 `ai_image_wait_seconds` 等待下一张图片；关键词触发则按 `keyword_image_wait_seconds` 等待。两分钟内追问同一会话中刚发送的图片也可复用该图片。关闭 AstrBot 的流式输出和平台分段回复，才能确保完整图文结果在同一条消息中发送。
+AI 正常判断是否调用工具。明确的搜图需求被拒绝时，插件补调工具；其余请求结合最近对话判断。“这张呢”一类短追问若被明确拒绝查找出处，也会补搜。拒绝查看缓存中的指定引擎候选时同样支持补调。普通图片聊天不会因出现拒绝措辞就触发搜索。
 
 ## 已知限制
 
-- 五个引擎的相似度含义不同，模型会结合图片和可用证据选择候选，不能把各引擎分数当作统一概率。名称与账号只取搜索结果明确给出的字段或页面地址中的公开账号路径。
-- 纯文本模型依据标题、平台、相似度和引擎交叉命中判断；支持图像的模型还可比较所有可用的候选预览。一次请求最多附带 26 张图（用户原图及 25 条候选预览），模型供应商需允许对应的图像数量；图像请求失败时会以文字候选再试一次。
-- 若 AstrBot 平台配置为对所有结果启用“分段回复”，它仍会把图文消息拆开；需在 AstrBot 中关闭该设置。
-- 部分引擎只提供缩略图，或预览图地址无法下载，此时该条结果会显示“预览图：暂无”。
-- Google Lens 需要有效 Key。Yandex 的网页结果可能受到验证码或页面改版影响。
-- 引用消息需由平台适配器提供被引用的图片组件；引用内容无法读取时，请重新发送图片。
-- 普通群聊带图提问沿用 AstrBot 的唤醒规则；没有“搜图”指令时，需先唤醒机器人，AI 才会判断是否调用工具。
+- 缓存仅保存在内存中，插件重启或有效时间结束后需要重新提供图片。
+- 模型不支持图片或路由失败时使用 Google Lens 和 Yandex；无法复核时只展示近似候选，不确认出处。文案生成失败时使用简短的数据摘要。
+- 首次复核最多使用三个引擎各五条候选及其可用预览，模型需支持相应图片数量。全部候选展开可能生成较长的消息，受聊天平台消息大小限制。
+- 引擎可能只提供缩略图，原图不可访问时使用缩略图；两者都不可用时没有预览图。
+- Google Lens 需要有效 Key；Yandex 可能要求验证码；E-Hentai 的 HTTP 403 等错误会保留原因，不能保证外站允许访问。
+- 引用消息需要平台适配器提供图片组件。普通群聊提问沿用 AstrBot 的唤醒规则，需要先唤醒机器人。
+
+## 开发验证
+
+安装 `requirements.txt` 及 AstrBot 使用的 `pydantic` 后，可执行 `python -m unittest discover -s tests -v`。测试使用模拟模型与搜索响应，覆盖引擎路由、补搜、候选完整性、缓存隔离、文案生成及拒绝后的补调。
 
 ## 来源与许可
 
-五个引擎的请求和响应解析代码基于 [OMSociety/astrbot_plugin_reverse_searcher](https://github.com/OMSociety/astrbot_plugin_reverse_searcher) 修改。本仓库按原项目的 AGPL-3.0 许可发布，详见 `LICENSE`。
+引擎请求和响应解析代码基于 [OMSociety/astrbot_plugin_reverse_searcher](https://github.com/OMSociety/astrbot_plugin_reverse_searcher) 修改。本仓库按原项目的 AGPL-3.0 许可发布，详见 `LICENSE`。

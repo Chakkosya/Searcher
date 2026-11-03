@@ -1,7 +1,7 @@
 name: reverse_searcher
 display_name: reverse_searcher
 desc: 多引擎同时搜图，合并去重后以文字返回前三条匹配
-version: 0.7.0
+version: 0.8.0
 author: Searcher contributors
 repo: https://github.com/Chakkosya/Searcher
 tags:
