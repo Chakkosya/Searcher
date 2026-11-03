@@ -1,0 +1,42 @@
+{
+  "proxies": {
+    "description": "HTTP 代理地址",
+    "type": "string",
+    "default": ""
+  },
+  "trigger_keywords": {
+    "description": "触发五引擎搜图的关键词",
+    "type": "list",
+    "default": ["以图搜图", "找鸡"]
+  },
+  "allow_third_party_image_host": {
+    "description": "允许 Google Lens 和 Yandex 使用临时图床搜索本地图片",
+    "type": "bool",
+    "default": true
+  },
+  "serpapi_key": {
+    "description": "SerpAPI Key（Google Lens）",
+    "type": "string",
+    "default": ""
+  },
+  "zenserp_key": {
+    "description": "Zenserp Key（Google Lens 备用）",
+    "type": "string",
+    "default": ""
+  },
+  "saucenao_api_key": {
+    "description": "SauceNAO API Key",
+    "type": "string",
+    "default": ""
+  },
+  "yandex_cookies": {
+    "description": "Yandex Cookie（出现验证码时填写）",
+    "type": "string",
+    "default": ""
+  },
+  "ehentai_cookies": {
+    "description": "E-Hentai Cookie（可选）",
+    "type": "string",
+    "default": ""
+  }
+}
