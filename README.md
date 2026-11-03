@@ -1,4 +1,4 @@
-# 五引擎找图 Top 3
+# Search Image
 
 AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、Google Lens 和 Yandex 搜索。结果按相同页面去重，优先展示多引擎都命中的页面、明确的高相似度结果和包含原图的页面，取前三条发送。消息包含平台、匹配关键词、名称或账号（有数据时）及预览图；不展示页面链接，也不生成卡片。
 
