@@ -34,6 +34,3 @@ AI 会先判断是否调用工具。带图片的请求若被 LLM 以拒绝语句
 - 引用消息需由平台适配器提供被引用的图片组件；引用内容无法读取时，请重新发送图片。
 - 普通群聊带图提问沿用 AstrBot 的唤醒规则；没有“搜图”指令时，需先唤醒机器人，AI 才会判断是否调用工具。
 
-## 来源与许可
-
-五个引擎的请求和响应解析代码基于 [OMSociety/astrbot_plugin_reverse_searcher](https://github.com/OMSociety/astrbot_plugin_reverse_searcher) 修改。本仓库按原项目的 AGPL-3.0 许可发布，详见 `LICENSE`。
