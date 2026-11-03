@@ -27,6 +27,17 @@ LABELS = {
     "google": "Google Lens",
     "yandex": "Yandex",
 }
+DEFAULT_HEADER = "🔎 图像线索｜五站检索\n按匹配证据整理的三条候选："
+DEFAULT_ITEM = "\n\n{rank_symbol} {platform} · {match}\n{keyword}{account_line}{reason_line}"
+DEFAULT_FOOTER = "\n\n识图线索可能有误，请对照原图核实。"
+
+
+def render_template(template: str, default: str, **values) -> str:
+    try:
+        return template.format(**values)
+    except (KeyError, ValueError, IndexError) as exc:
+        logger.warning("[reverse_searcher_top3] Invalid result template: %s", exc)
+        return default.format(**values)
 
 
 @dataclass
@@ -354,29 +365,46 @@ class SearchService:
                 continue
         return None
 
-    async def result_chain(self, report: SearchReport, selected: list[SearchHit], notes: dict[int, str]) -> list:
+    async def result_chain(self, report: SearchReport, selected: list[SearchHit], notes: dict[int, str], query: str = "") -> list:
         """Build the model-ranked answer with inline previews."""
         if not selected:
-            return [Plain("🔎 图像线索｜五站检索\n\n暂时没有找到可信的匹配结果。")]
+            default = "🔎 图像线索｜五站检索\n\n暂时没有找到可信的匹配结果。"
+            return [Plain(render_template(self.config.get("result_empty_text", default), default, query=query, count=0))]
         async with Network(proxies=self.config.get("proxies") or None, timeout=25) as network:
             previews = await asyncio.gather(
                 *(self._preview_bytes(network, hit) for hit in selected)
             )
-        chain = [Plain("🔎 图像线索｜五站检索\n按匹配证据整理的三条候选：")]
+        common = {"query": query, "count": len(selected)}
+        chain = [Plain(render_template(self.config.get("result_header_template", DEFAULT_HEADER), DEFAULT_HEADER, **common))]
         for number, (hit, preview) in enumerate(zip(selected, previews), 1):
             original_id = report.hits.index(hit) + 1
-            detail = f"\n\n{('①', '②', '③')[number - 1]} {hit.platform} · {hit.evidence}\n{hit.title or hit.source or '相似图片'}"
-            if hit.account:
-                detail += f"\n👤 {hit.account}"
-            if notes.get(original_id):
-                detail += f"\n✦ {notes[original_id]}"
+            account_line = f"\n👤 {hit.account}" if hit.account else ""
+            reason_line = f"\n✦ {notes[original_id]}" if notes.get(original_id) else ""
+            detail = render_template(
+                self.config.get("result_item_template", DEFAULT_ITEM),
+                DEFAULT_ITEM,
+                rank=number,
+                rank_symbol=("①", "②", "③")[number - 1],
+                platform=hit.platform,
+                match=hit.evidence,
+                keyword=hit.title or hit.source or "相似图片",
+                name=hit.title,
+                account=hit.account,
+                account_line=account_line,
+                reason=notes.get(original_id, ""),
+                reason_line=reason_line,
+                engines="、".join(LABELS[name] for name in ENGINES if name in hit.engines),
+                **common,
+            )
             chain.append(Plain(detail))
             if preview:
                 chain.append(AstrImage.fromBytes(preview))
             else:
-                chain.append(Plain("\n预览图：暂无"))
+                default = "\n预览图：暂无"
+                chain.append(Plain(render_template(self.config.get("result_no_preview_text", default), default, **common)))
         if report.failures:
             failed = "；".join(f"{LABELS[name]}：{report.failures[name]}" for name in ENGINES if name in report.failures)
-            chain.append(Plain("\n未完成的引擎：" + failed))
-        chain.append(Plain("\n\n识图线索可能有误，请对照原图核实。"))
+            default = "\n未完成的引擎：{failures}"
+            chain.append(Plain(render_template(self.config.get("result_failures_template", default), default, failures=failed, **common)))
+        chain.append(Plain(render_template(self.config.get("result_footer_template", DEFAULT_FOOTER), DEFAULT_FOOTER, **common)))
         return chain

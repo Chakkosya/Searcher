@@ -1,7 +1,7 @@
 name: reverse_searcher
 display_name: 五引擎找图 Top 3
 desc: 五个引擎同时搜图，由所选模型复核前三条并附预览图
-version: 0.3.0
+version: 0.4.0
 author: Searcher contributors
 repo: https://github.com/Chakkosya/Searcher
 tags:

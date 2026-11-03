@@ -23,7 +23,7 @@ REFUSAL = re.compile(
 IMAGE_URL = re.compile(r"https?://[^\s<>]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>]*)?", re.I)
 NEGATED_SEARCH = re.compile(r"(?:不要|别|不用|无需).{0,3}(?:以图搜图|搜图|找鸡)")
 IMAGE_FOLLOWUP = re.compile(r"图片|这张图|那张图|同一张|上一张|漫画|角色|人物|出处|原图|名字|这是谁")
-PENDING_SECONDS = 120
+RECENT_IMAGE_SECONDS = 120
 
 
 def image_ref_from_event(event: AstrMessageEvent) -> str | None:
@@ -61,7 +61,7 @@ class ReverseSearcherTop3(Star):
         self.search_tool = ReverseSearchTool()
         self.search_tool.inject_service(self.search_service, context)
         self.context.add_llm_tools(self.search_tool)
-        self.pending_search: dict[tuple[str, str], float] = {}
+        self.pending_search: dict[tuple[str, str], tuple[float, str]] = {}
         self.recent_images: dict[tuple[str, str], tuple[str, float]] = {}
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -74,30 +74,37 @@ class ReverseSearcherTop3(Star):
             self.recent_images = {
                 recent_key: recent
                 for recent_key, recent in self.recent_images.items()
-                if now - recent[1] <= PENDING_SECONDS
+                if now - recent[1] <= RECENT_IMAGE_SECONDS
             }
             self.recent_images[key] = (image_ref, now)
         elif IMAGE_FOLLOWUP.search(text):
             recent = self.recent_images.get(key)
-            if recent and now - recent[1] <= PENDING_SECONDS:
+            if recent and now - recent[1] <= RECENT_IMAGE_SECONDS:
                 event.set_extra("reverse_search_image_ref", recent[0])
         triggers = self.config.get("trigger_keywords") or ["以图搜图", "找鸡", "搜图"]
         explicit = not NEGATED_SEARCH.search(text) and (
             text.strip() == "搜图" or any(word and word in text for word in triggers)
         )
-        pending_at = self.pending_search.pop(key, None)
-        followup = pending_at is not None and now - pending_at <= PENDING_SECONDS and bool(image_ref)
+        pending = self.pending_search.get(key)
+        if pending and now > pending[0]:
+            self.pending_search.pop(key, None)
+            pending = None
+        followup = pending is not None and bool(image_ref)
+        if followup:
+            self.pending_search.pop(key, None)
+            event.set_extra("reverse_search_query", pending[1])
         if not (explicit or followup):
             return
         if not (image_ref or event.get_extra("reverse_search_image_ref")):
             event.stop_event()
+            seconds = max(1, int(self.config.get("keyword_image_wait_seconds", 120)))
             self.pending_search = {
-                pending_key: started
-                for pending_key, started in self.pending_search.items()
-                if now - started <= PENDING_SECONDS
+                pending_key: state for pending_key, state in self.pending_search.items()
+                if state[0] >= now
             }
-            self.pending_search[key] = now
-            yield event.plain_result("请在下一条消息发送图片，或回复一条含图片的消息（两分钟内有效）。")
+            self.pending_search[key] = (now + seconds, text)
+            prompt = self.config.get("keyword_image_wait_prompt", "请在 {seconds} 秒内发送图片，或回复一条含图片的消息。")
+            yield event.plain_result(prompt.replace("{seconds}", str(seconds)))
             return
         event.is_at_or_wake_command = True
         event.set_extra("reverse_search_requested", True)
@@ -110,7 +117,7 @@ class ReverseSearcherTop3(Star):
             event.set_extra("reverse_search_followup", False)
             req.extra_user_content_parts.append(
                 TextPart(
-                    text="上一条消息是搜图请求，本条消息补充了图片。请判断是否需要调用 reverse_search_top3 工具。"
+                    text="上一条消息请求查找图片线索，本条消息补充了图片。请判断是否需要调用 reverse_search_top3 工具。"
                 ).mark_as_temp()
             )
         elif event.get_extra("reverse_search_image_ref"):
@@ -124,6 +131,22 @@ class ReverseSearcherTop3(Star):
     async def search_after_refusal(self, event, run_context, resp):
         """Run the registered search tool when a reply refuses a request with an image."""
         if not resp or getattr(resp, "role", "") != "assistant":
+            return
+        if event.get_extra("reverse_search_waiting_ai"):
+            seconds = max(1, int(self.config.get("ai_image_wait_seconds", 120)))
+            key = (event.unified_msg_origin, event.get_sender_id())
+            query = getattr(event.message_obj, "message_str", "") or ""
+            now = time.monotonic()
+            self.pending_search = {
+                pending_key: state for pending_key, state in self.pending_search.items()
+                if state[0] >= now
+            }
+            self.pending_search[key] = (now + seconds, query)
+            prompt = self.config.get("ai_image_wait_prompt", "我可以帮你找图。请在 {seconds} 秒内发送图片。")
+            wait_text = prompt.replace("{seconds}", str(seconds))
+            replace_final_reply(resp, [Plain(wait_text)])
+            if run_context.messages and run_context.messages[-1].role == "assistant":
+                run_context.messages[-1].content = [TextPart(text=wait_text)]
             return
         image_ref = image_ref_from_event(event) or event.get_extra("reverse_search_image_ref")
         prepared = event.get_extra("reverse_search_final_chain")

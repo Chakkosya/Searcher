@@ -41,10 +41,11 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
         image_ref = image_ref_from_event(event) or event.get_extra("reverse_search_image_ref") or kwargs.get("image_url")
         image_base64 = kwargs.get("image_base64")
         if not image_ref and not image_base64:
-            return "请先发送图片，或回复一条含图片的消息。"
+            event.set_extra("reverse_search_waiting_ai", True)
+            return "等待用户补充图片。"
         try:
             report = await self.service.search(image_ref=image_ref, image_base64=image_base64)
-            query = getattr(event.message_obj, "message_str", "") or ""
+            query = event.get_extra("reverse_search_query") or getattr(event.message_obj, "message_str", "") or ""
             selected, notes = await self.service.rank(
                 report,
                 query,
@@ -52,7 +53,7 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
                 event.unified_msg_origin,
                 image_ref or (f"base64://{image_base64}" if image_base64 else None),
             )
-            chain = await self.service.result_chain(report, selected, notes)
+            chain = await self.service.result_chain(report, selected, notes, query)
             event.set_extra("reverse_search_final_chain", chain)
             return "\n".join(part.text for part in chain if hasattr(part, "text"))
         except Exception as exc:

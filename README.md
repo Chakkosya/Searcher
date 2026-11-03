@@ -1,10 +1,10 @@
-# 五引擎找图 Top 3
+# Search Image
 
 AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、Google Lens 和 Yandex 搜索。结果按相同页面去重，优先展示多引擎都命中的页面、明确的高相似度结果和包含原图的页面，取前三条发送。消息包含平台、匹配关键词、名称或账号（有数据时）及预览图；不展示页面链接，也不生成卡片。
 
 ## 安装
 
-使用 AstrBot 4.23.2 或更新版本。将本仓库目录放到 AstrBot 的 `data/plugins/reverse_searcher`，安装 `requirements.txt` 中的依赖并重启 AstrBot。可直接发送“以图搜图”“找鸡”或“搜图”加图片，也可回复一条含图片的消息提问。先发“搜图”、下一条单独发图片也会进入 AI 判断；等待两分钟，按同一会话和发送者承接。插件提供 `reverse_search_top3` 工具，由 AI 根据用户问题判断是否调用。
+使用 AstrBot 4.23.2 或更新版本。将本仓库目录放到 AstrBot 的 `data/plugins/reverse_searcher`，安装 `requirements.txt` 中的依赖并重启 AstrBot。可直接发送“以图搜图”“找鸡”或“搜图”加图片，也可回复一条含图片的消息提问。也可以先提出搜图要求、再发送图片；等待时长在插件配置中设置，同一会话和发送者的图片会接续该请求。插件提供 `reverse_search_top3` 工具，由 AI 根据用户问题判断是否调用。
 
 工具会把五个引擎的候选结果交给指定的 AstrBot 模型复核，由模型选出前三条；结果经 AstrBot 的正常回复流程发送，不由工具主动发送消息。每条线索后附预览图，优先使用引擎给出的原图地址，失败时使用缩略图。
 
@@ -20,12 +20,18 @@ AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、
 - `ehentai_cookies`：需要登录搜索时填写。
 - `allow_third_party_image_host`：Google Lens 和 Yandex 搜索消息图片时需先把图片上传到临时图床；默认开启。
 - `trigger_keywords`：默认 `以图搜图`、`找鸡`、`搜图`。
+- `keyword_image_wait_seconds` / `ai_image_wait_seconds`：关键词或 AI 工具触发后，等待下一张图片的秒数，默认各 120 秒。
+- `keyword_image_wait_prompt` / `ai_image_wait_prompt`：两种入口的等待提示。可写 `{seconds}`，发送时替换为对应秒数。
+- `result_header_template` / `result_item_template` / `result_footer_template`：结果标题、每条线索、结尾的文字格式。每条预览图固定跟在该条线索文字后。
+- `result_empty_text` / `result_no_preview_text` / `result_failures_template`：无匹配、无预览图、部分引擎失败时的文字。
+
+结果模板可使用 `{query}`（用户问题）和 `{count}`（返回条数）。每条线索还可使用 `{rank}`、`{rank_symbol}`、`{platform}`、`{match}`、`{keyword}`、`{name}`、`{account}`、`{account_line}`、`{reason}`、`{reason_line}`、`{engines}`。其中 `account_line` 和 `reason_line` 在没有数据时为空。`result_failures_template` 另可使用 `{failures}`。要显示字面量大括号，写成 `{{` 和 `}}`。
 
 五个引擎会并发尝试。未配置 Google Key、遭遇验证码或某个引擎出错时，其余引擎仍返回结果，消息末尾列出未完成的引擎。
 
 ## 拒绝后的搜图
 
-AI 会先判断是否调用工具。带图片的请求若被 LLM 以拒绝语句结束，或用户明确要求搜图而 LLM 未调用工具，插件会补调注册的 `reverse_search_top3` 工具，把搜索结果交给所选模型复核，再将模型选出的结果作为本次 AstrBot 回复。两分钟内追问同一会话中刚发送的图片也可复用该图片。要让替换后的回复完整生效，建议关闭 AstrBot 的流式输出；流式模式中已发出的文字片段无法撤回。
+AI 会先判断是否调用工具。带图片的请求若被 LLM 以拒绝语句结束，或用户明确要求搜图而 LLM 未调用工具，插件会补调注册的 `reverse_search_top3` 工具，把搜索结果交给所选模型复核，再将模型选出的结果作为本次 AstrBot 回复。AI 调用工具时若当前没有图片，会按 `ai_image_wait_seconds` 等待下一张图片；关键词触发则按 `keyword_image_wait_seconds` 等待。两分钟内追问同一会话中刚发送的图片也可复用该图片。要让替换后的回复完整生效，建议关闭 AstrBot 的流式输出；流式模式中已发出的文字片段无法撤回。
 
 ## 已知限制
 

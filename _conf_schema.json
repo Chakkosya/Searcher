@@ -15,6 +15,58 @@
     "type": "list",
     "default": ["以图搜图", "找鸡", "搜图"]
   },
+  "keyword_image_wait_seconds": {
+    "description": "关键词触发后等待下一张图片的秒数",
+    "type": "int",
+    "default": 120,
+    "slider": {"min": 1, "max": 600, "step": 1}
+  },
+  "keyword_image_wait_prompt": {
+    "description": "关键词触发后等待图片的提示，可使用 {seconds}",
+    "type": "text",
+    "default": "请在 {seconds} 秒内发送图片，或回复一条含图片的消息。"
+  },
+  "ai_image_wait_seconds": {
+    "description": "AI 调用搜图工具但没有图片时等待下一张图片的秒数",
+    "type": "int",
+    "default": 120,
+    "slider": {"min": 1, "max": 600, "step": 1}
+  },
+  "ai_image_wait_prompt": {
+    "description": "AI 触发后等待图片的提示，可使用 {seconds}",
+    "type": "text",
+    "default": "我可以帮你找图。请在 {seconds} 秒内发送图片。"
+  },
+  "result_header_template": {
+    "description": "结果标题，可使用 {query}、{count}",
+    "type": "text",
+    "default": "🔎 图像线索｜五站检索\n按匹配证据整理的三条候选："
+  },
+  "result_item_template": {
+    "description": "每条结果的文字模板，字段见 README；预览图固定接在该条文字后",
+    "type": "text",
+    "default": "\n\n{rank_symbol} {platform} · {match}\n{keyword}{account_line}{reason_line}"
+  },
+  "result_footer_template": {
+    "description": "结果结尾，可使用 {query}、{count}",
+    "type": "text",
+    "default": "\n\n识图线索可能有误，请对照原图核实。"
+  },
+  "result_empty_text": {
+    "description": "没有匹配结果时的回复文字",
+    "type": "text",
+    "default": "🔎 图像线索｜五站检索\n\n暂时没有找到可信的匹配结果。"
+  },
+  "result_no_preview_text": {
+    "description": "某条结果没有可用预览图时的文字",
+    "type": "string",
+    "default": "\n预览图：暂无"
+  },
+  "result_failures_template": {
+    "description": "部分引擎未完成时的文字，可使用 {failures}",
+    "type": "text",
+    "default": "\n未完成的引擎：{failures}"
+  },
   "allow_third_party_image_host": {
     "description": "允许 Google Lens 和 Yandex 使用临时图床搜索本地图片",
     "type": "bool",
