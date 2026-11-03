@@ -46,7 +46,9 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
             try:
                 image_base64 = await component.convert_to_base64()
             except Exception as exc:
-                return f"搜图失败：无法读取消息中的图片（{type(exc).__name__}）"
+                if not image_ref or image_ref.startswith(("file://", "base64://")):
+                    return f"搜图失败：无法读取消息中的图片（{type(exc).__name__}）"
+                image_base64 = None
         if not image_ref and not image_base64:
             event.set_extra("reverse_search_waiting_ai", True)
             return "等待用户补充图片。"
