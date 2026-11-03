@@ -26,21 +26,26 @@ IMAGE_FOLLOWUP = re.compile(r"图片|这张图|那张图|同一张|上一张|漫
 RECENT_IMAGE_SECONDS = 120
 
 
-def image_ref_from_event(event: AstrMessageEvent) -> str | None:
-    """Use an attached or quoted image, then a public image URL in the text."""
+def image_component_from_event(event: AstrMessageEvent) -> AstrImage | None:
     message = getattr(event.message_obj, "message", []) or []
     for component in message:
         if isinstance(component, AstrImage):
-            ref = getattr(component, "url", "") or getattr(component, "file", "")
-            if ref:
-                return ref
+            return component
     for component in message:
         if isinstance(component, Reply):
             for quoted in component.chain or []:
                 if isinstance(quoted, AstrImage):
-                    ref = getattr(quoted, "url", "") or getattr(quoted, "file", "")
-                    if ref:
-                        return ref
+                    return quoted
+    return None
+
+
+def image_ref_from_event(event: AstrMessageEvent) -> str | None:
+    """Use an attached or quoted image, then a public image URL in the text."""
+    component = image_component_from_event(event)
+    if component:
+        ref = getattr(component, "url", "") or getattr(component, "file", "") or getattr(component, "path", "")
+        if ref:
+            return ref
     match = IMAGE_URL.search(getattr(event.message_obj, "message_str", "") or "")
     return match.group(0) if match else None
 
@@ -62,25 +67,28 @@ class ReverseSearcherTop3(Star):
         self.search_tool.inject_service(self.search_service, context)
         self.context.add_llm_tools(self.search_tool)
         self.pending_search: dict[tuple[str, str], tuple[float, str]] = {}
-        self.recent_images: dict[tuple[str, str], tuple[str, float]] = {}
+        self.recent_images: dict[tuple[str, str], tuple[str | None, AstrImage | None, float]] = {}
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def prepare_search_request(self, event: AstrMessageEvent):
         text = getattr(event.message_obj, "message_str", "") or ""
         image_ref = image_ref_from_event(event)
+        image_component = image_component_from_event(event)
+        has_image = bool(image_ref or image_component)
         key = (event.unified_msg_origin, event.get_sender_id())
         now = time.monotonic()
-        if image_ref:
+        if has_image:
             self.recent_images = {
                 recent_key: recent
                 for recent_key, recent in self.recent_images.items()
-                if now - recent[1] <= RECENT_IMAGE_SECONDS
+                if now - recent[2] <= RECENT_IMAGE_SECONDS
             }
-            self.recent_images[key] = (image_ref, now)
+            self.recent_images[key] = (image_ref, image_component, now)
         elif IMAGE_FOLLOWUP.search(text):
             recent = self.recent_images.get(key)
-            if recent and now - recent[1] <= RECENT_IMAGE_SECONDS:
+            if recent and now - recent[2] <= RECENT_IMAGE_SECONDS:
                 event.set_extra("reverse_search_image_ref", recent[0])
+                event.set_extra("reverse_search_image_component", recent[1])
         triggers = self.config.get("trigger_keywords") or ["以图搜图", "找鸡", "搜图"]
         explicit = not NEGATED_SEARCH.search(text) and (
             text.strip() == "搜图" or any(word and word in text for word in triggers)
@@ -89,13 +97,13 @@ class ReverseSearcherTop3(Star):
         if pending and now > pending[0]:
             self.pending_search.pop(key, None)
             pending = None
-        followup = pending is not None and bool(image_ref)
+        followup = pending is not None and has_image
         if followup:
             self.pending_search.pop(key, None)
             event.set_extra("reverse_search_query", pending[1])
         if not (explicit or followup):
             return
-        if not (image_ref or event.get_extra("reverse_search_image_ref")):
+        if not (has_image or event.get_extra("reverse_search_image_ref") or event.get_extra("reverse_search_image_component")):
             event.stop_event()
             seconds = max(1, int(self.config.get("keyword_image_wait_seconds", 120)))
             self.pending_search = {
@@ -149,6 +157,7 @@ class ReverseSearcherTop3(Star):
                 run_context.messages[-1].content = [TextPart(text=wait_text)]
             return
         image_ref = image_ref_from_event(event) or event.get_extra("reverse_search_image_ref")
+        has_image = bool(image_ref or image_component_from_event(event) or event.get_extra("reverse_search_image_component"))
         prepared = event.get_extra("reverse_search_final_chain")
         text = getattr(event.message_obj, "message_str", "") or ""
         if prepared is None and NEGATED_SEARCH.search(text):
@@ -158,7 +167,7 @@ class ReverseSearcherTop3(Star):
             getattr(getattr(choice, "message", None), "refusal", None) for choice in choices
         )
         if prepared is None:
-            if not image_ref or not (event.get_extra("reverse_search_requested") or refused):
+            if not has_image or not (event.get_extra("reverse_search_requested") or refused):
                 return
             answer = await self.search_tool.call(run_context, image_url=image_ref)
             prepared = event.get_extra("reverse_search_final_chain")

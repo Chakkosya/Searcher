@@ -37,25 +37,30 @@
     "type": "text",
     "default": "我可以帮你找图。请在 {seconds} 秒内发送图片。"
   },
+  "search_progress_prompt": {
+    "description": "开始搜索时发送的提示，留空则不发送",
+    "type": "string",
+    "default": "🔍 正在全网找图，请稍候..."
+  },
   "result_header_template": {
     "description": "结果标题，可使用 {query}、{count}",
     "type": "text",
-    "default": "🔎 图像线索｜五站检索\n按匹配证据整理的 {count} 条候选："
+    "default": "🎯 **找图结果**"
   },
   "result_item_template": {
     "description": "每条结果的文字模板，字段见 README；预览图固定接在该条文字后",
     "type": "text",
-    "default": "\n\n{rank_symbol} {platform} · {match}\n{keyword}{account_line}{reason_line}"
+    "default": "\n\n{rank_symbol} 🌐 平台：{platform}\n🔎 匹配：{match}\n🔑 关键词：{keyword}{name_line}{account_line}"
   },
   "result_footer_template": {
     "description": "结果结尾，可使用 {query}、{count}",
     "type": "text",
-    "default": "\n\n识图线索可能有误，请对照原图核实。"
+    "default": "\n\n⚠️ 识图存在误差，请自行核对哦～"
   },
   "result_empty_text": {
     "description": "没有匹配结果时的回复文字",
     "type": "text",
-    "default": "🔎 图像线索｜五站检索\n\n暂时没有找到可信的匹配结果。"
+    "default": "🎯 **找图结果**\n\n暂时没有找到可信的匹配结果。"
   },
   "result_no_preview_text": {
     "description": "某条结果没有可用预览图时的文字",

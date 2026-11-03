@@ -27,9 +27,15 @@ LABELS = {
     "google": "Google Lens",
     "yandex": "Yandex",
 }
-DEFAULT_HEADER = "🔎 图像线索｜五站检索\n按匹配证据整理的 {count} 条候选："
-DEFAULT_ITEM = "\n\n{rank_symbol} {platform} · {match}\n{keyword}{account_line}{reason_line}"
-DEFAULT_FOOTER = "\n\n识图线索可能有误，请对照原图核实。"
+DEFAULT_HEADER = "🎯 **找图结果**"
+DEFAULT_ITEM = "\n\n{rank_symbol} 🌐 平台：{platform}\n🔎 匹配：{match}\n🔑 关键词：{keyword}{name_line}{account_line}"
+DEFAULT_FOOTER = "\n\n⚠️ 识图存在误差，请自行核对哦～"
+OLD_DEFAULTS = {
+    "result_header_template": "🔎 图像线索｜五站检索\n按匹配证据整理的 {count} 条候选：",
+    "result_item_template": "\n\n{rank_symbol} {platform} · {match}\n{keyword}{account_line}{reason_line}",
+    "result_footer_template": "\n\n识图线索可能有误，请对照原图核实。",
+    "result_empty_text": "🔎 图像线索｜五站检索\n\n暂时没有找到可信的匹配结果。",
+}
 
 
 def render_template(template: str, default: str, **values) -> str:
@@ -81,8 +87,6 @@ class SearchHit:
 
     @property
     def account(self) -> str:
-        if self.author:
-            return self.author
         parts = urlsplit(self.url)
         if (parts.hostname or "").lower() in ("x.com", "www.x.com", "twitter.com", "www.twitter.com"):
             name = parts.path.strip("/").split("/")[0]
@@ -169,6 +173,8 @@ def _from_response(engine: str, response) -> list[SearchHit]:
             for character in item.characters:
                 rank += 1
                 hits.append(SearchHit(engine, rank, character.name, source=character.work))
+                if rank == 5:
+                    return hits
         return hits
     for rank, item in enumerate(response.raw[:5], 1):
         source = getattr(item, "source", "") or getattr(item, "index_name", "") or ""
@@ -194,6 +200,10 @@ def _from_response(engine: str, response) -> list[SearchHit]:
 class SearchService:
     def __init__(self, config: dict):
         self.config = config
+
+    def _template(self, key: str, default: str) -> str:
+        value = self.config.get(key, default)
+        return default if value == OLD_DEFAULTS.get(key) else value
 
     async def _image_bytes(self, image_ref: str | None, image_base64: str | None) -> bytes:
         if image_base64:
@@ -260,12 +270,12 @@ class SearchService:
                 failures[engine] = str(response)[:120] if isinstance(response, ValueError) else type(response).__name__
                 continue
             hits.extend(_from_response(engine, response))
-        return SearchReport(merge_hits(hits), failures)
+        return SearchReport(hits, failures)
 
     async def rank(self, report: SearchReport, query: str, context, origin: str, image_ref: str | None = None):
         """Let the configured AstrBot model choose three candidates from all engines."""
         hits = report.hits
-        selected = hits[:3]
+        selected: list[SearchHit] = []
         notes: dict[int, str] = {}
         if not hits:
             return selected, notes
@@ -275,6 +285,7 @@ class SearchService:
                 "id": number,
                 "platform": hit.platform,
                 "title": hit.title[:180],
+                "name": hit.author[:80],
                 "account": hit.account[:80],
                 "source": hit.source[:120],
                 "similarity": hit.similarity,
@@ -288,14 +299,15 @@ class SearchService:
             "用户问题：" + (query or "请找出这张图片最可能的出处或角色") + "\n"
             "五个以图搜图引擎的候选结果：\n"
             + json.dumps(candidates, ensure_ascii=False)
-            + "\n选最符合用户问题、最可能对应原图的前三条。优先考虑明确相似度、"
-            "多引擎交叉命中、原图页面和具体名称；不要把不同引擎的分数当成同一概率。"
+            + "\n每个引擎最多提供五条原始候选。选最符合用户问题、最可能对应原图的前三条，"
+            "同一页面只选一次。优先考虑明确相似度、多个引擎相互印证、原图页面和具体名称；"
+            "不要把不同引擎的分数当成同一概率。"
             "只返回 JSON：{\"ids\":[候选id],\"notes\":{\"id\":\"一句简短的匹配依据\"}}。"
             "不要输出链接，不要补造候选中没有的名字或账号。"
         )
         image_urls = [image_ref] if image_ref else []
         preview_ids = []
-        for number, hit in enumerate(hits[:6], 1):
+        for number, hit in enumerate(hits, 1):
             preview = hit.preview_url or hit.thumbnail_url
             if preview.startswith(("https://", "http://")):
                 image_urls.append(preview)
@@ -325,18 +337,26 @@ class SearchService:
             raw = response.completion_text or ""
             data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
             ids = []
+            seen = set()
             for value in data.get("ids", []):
                 number = int(value)
-                if 1 <= number <= len(hits) and number not in ids:
-                    ids.append(number)
+                if 1 <= number <= len(hits):
+                    hit = hits[number - 1]
+                    key = _normal_url(hit.url) if hit.url else f"{hit.engine}:{hit.title}:{hit.source}"
+                    if key not in seen:
+                        ids.append(number)
+                        seen.add(key)
                 if len(ids) == 3:
                     break
             if ids:
-                for number in range(1, len(hits) + 1):
+                for hit in merge_hits(hits):
                     if len(ids) == 3:
                         break
-                    if number not in ids:
+                    number = next(index for index, candidate in enumerate(hits, 1) if candidate is hit)
+                    key = _normal_url(hit.url) if hit.url else f"{hit.engine}:{hit.title}:{hit.source}"
+                    if key not in seen:
                         ids.append(number)
+                        seen.add(key)
                 selected = [hits[number - 1] for number in ids[:3]]
                 raw_notes = data.get("notes", {})
                 notes = {
@@ -345,6 +365,8 @@ class SearchService:
                 }
         except Exception as exc:
             logger.warning("[reverse_searcher_top3] AI ranking unavailable: %s", type(exc).__name__)
+        if not selected:
+            selected = merge_hits(hits)[:3]
         return selected, notes
 
     async def _preview_bytes(self, network: Network, hit: SearchHit) -> bytes | None:
@@ -368,28 +390,33 @@ class SearchService:
     async def result_chain(self, report: SearchReport, selected: list[SearchHit], notes: dict[int, str], query: str = "") -> list:
         """Build the model-ranked answer with inline previews."""
         if not selected:
-            default = "🔎 图像线索｜五站检索\n\n暂时没有找到可信的匹配结果。"
-            return [Plain(render_template(self.config.get("result_empty_text", default), default, query=query, count=0))]
+            default = "🎯 **找图结果**\n\n暂时没有找到可信的匹配结果。"
+            return [Plain(render_template(self._template("result_empty_text", default), default, query=query, count=0))]
         async with Network(proxies=self.config.get("proxies") or None, timeout=25) as network:
             previews = await asyncio.gather(
                 *(self._preview_bytes(network, hit) for hit in selected)
             )
         common = {"query": query, "count": len(selected)}
-        chain = [Plain(render_template(self.config.get("result_header_template", DEFAULT_HEADER), DEFAULT_HEADER, **common))]
+        chain = [Plain(render_template(self._template("result_header_template", DEFAULT_HEADER), DEFAULT_HEADER, **common))]
         for number, (hit, preview) in enumerate(zip(selected, previews), 1):
             original_id = report.hits.index(hit) + 1
-            account_line = f"\n👤 {hit.account}" if hit.account else ""
-            reason_line = f"\n✦ {notes[original_id]}" if notes.get(original_id) else ""
+            name_line = f"\n👤 名字：{hit.author}" if hit.author and hit.author.lstrip("@") != hit.account.lstrip("@") else ""
+            account_line = f"\n🆔 账号：{hit.account}" if hit.account else ""
+            reason_line = f"\n📌 依据：{notes[original_id]}" if notes.get(original_id) else ""
+            keyword = hit.title or hit.source or "相似图片"
+            if keyword.startswith(("http://", "https://")):
+                keyword = "相似图片"
             detail = render_template(
-                self.config.get("result_item_template", DEFAULT_ITEM),
+                self._template("result_item_template", DEFAULT_ITEM),
                 DEFAULT_ITEM,
                 rank=number,
                 rank_symbol=("①", "②", "③")[number - 1],
                 platform=hit.platform,
                 match=hit.evidence,
-                keyword=hit.title or hit.source or "相似图片",
-                name=hit.title,
+                keyword=keyword,
+                name=hit.author,
                 account=hit.account,
+                name_line=name_line,
                 account_line=account_line,
                 reason=notes.get(original_id, ""),
                 reason_line=reason_line,
@@ -406,5 +433,5 @@ class SearchService:
             failed = "；".join(f"{LABELS[name]}：{report.failures[name]}" for name in ENGINES if name in report.failures)
             default = "\n未完成的引擎：{failures}"
             chain.append(Plain(render_template(self.config.get("result_failures_template", default), default, failures=failed, **common)))
-        chain.append(Plain(render_template(self.config.get("result_footer_template", DEFAULT_FOOTER), DEFAULT_FOOTER, **common)))
+        chain.append(Plain(render_template(self._template("result_footer_template", DEFAULT_FOOTER), DEFAULT_FOOTER, **common)))
         return chain
