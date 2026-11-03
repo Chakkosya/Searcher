@@ -30,22 +30,30 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
         }
     )
 
-    def inject_service(self, service: SearchService) -> None:
+    def inject_service(self, service: SearchService, astrbot_context) -> None:
         self.service = service
+        self.astrbot_context = astrbot_context
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
         from ..main import image_ref_from_event
 
         event = context.context.event
-        image_ref = kwargs.get("image_url") or image_ref_from_event(event)
+        image_ref = image_ref_from_event(event) or event.get_extra("reverse_search_image_ref") or kwargs.get("image_url")
         image_base64 = kwargs.get("image_base64")
         if not image_ref and not image_base64:
             return "请先发送图片，或回复一条含图片的消息。"
         try:
-            await event.send(event.plain_result("🔍 正在全网找图，请稍候…"))
             report = await self.service.search(image_ref=image_ref, image_base64=image_base64)
-            await event.send(event.chain_result(await self.service.result_chain(report)))
-            event.set_extra("reverse_search_result_sent", True)
-            return "已发送五引擎搜图结果。"
+            query = getattr(event.message_obj, "message_str", "") or ""
+            selected, notes = await self.service.rank(
+                report,
+                query,
+                self.astrbot_context,
+                event.unified_msg_origin,
+                image_ref or (f"base64://{image_base64}" if image_base64 else None),
+            )
+            chain = await self.service.result_chain(report, selected, notes)
+            event.set_extra("reverse_search_final_chain", chain)
+            return "\n".join(part.text for part in chain if hasattr(part, "text"))
         except Exception as exc:
             return f"搜图失败：{exc}"

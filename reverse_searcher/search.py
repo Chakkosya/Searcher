@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -249,6 +251,91 @@ class SearchService:
             hits.extend(_from_response(engine, response))
         return SearchReport(merge_hits(hits), failures)
 
+    async def rank(self, report: SearchReport, query: str, context, origin: str, image_ref: str | None = None):
+        """Let the configured AstrBot model choose three candidates from all engines."""
+        hits = report.hits
+        selected = hits[:3]
+        notes: dict[int, str] = {}
+        if not hits:
+            return selected, notes
+
+        candidates = [
+            {
+                "id": number,
+                "platform": hit.platform,
+                "title": hit.title[:180],
+                "account": hit.account[:80],
+                "source": hit.source[:120],
+                "similarity": hit.similarity,
+                "engines": sorted(hit.engines),
+                "engine_rank": hit.rank,
+                "exact_page": hit.engine == "google" and hit.group in ("exact", "pages"),
+            }
+            for number, hit in enumerate(hits, 1)
+        ]
+        prompt = (
+            "用户问题：" + (query or "请找出这张图片最可能的出处或角色") + "\n"
+            "五个以图搜图引擎的候选结果：\n"
+            + json.dumps(candidates, ensure_ascii=False)
+            + "\n选最符合用户问题、最可能对应原图的前三条。优先考虑明确相似度、"
+            "多引擎交叉命中、原图页面和具体名称；不要把不同引擎的分数当成同一概率。"
+            "只返回 JSON：{\"ids\":[候选id],\"notes\":{\"id\":\"一句简短的匹配依据\"}}。"
+            "不要输出链接，不要补造候选中没有的名字或账号。"
+        )
+        image_urls = [image_ref] if image_ref else []
+        preview_ids = []
+        for number, hit in enumerate(hits[:6], 1):
+            preview = hit.preview_url or hit.thumbnail_url
+            if preview.startswith(("https://", "http://")):
+                image_urls.append(preview)
+                preview_ids.append(number)
+        if preview_ids:
+            prompt += (
+                "\n附图第一张是用户原图，后面的预览图依次对应候选编号 "
+                + ", ".join(map(str, preview_ids))
+                + "。有图像能力时，请同时比较画面。"
+            )
+        try:
+            provider_id = self.config.get("ranking_provider_id") or await context.get_current_chat_provider_id(umo=origin)
+            request = {
+                "chat_provider_id": provider_id,
+                "prompt": prompt,
+                "system_prompt": "你根据反向搜图结果整理出处线索，只判断候选与用户问题的相关性。",
+            }
+            if image_urls:
+                try:
+                    response = await context.llm_generate(**request, image_urls=image_urls)
+                    if not (response.completion_text or "").lstrip().startswith(("{", "```")):
+                        response = await context.llm_generate(**request)
+                except Exception:
+                    response = await context.llm_generate(**request)
+            else:
+                response = await context.llm_generate(**request)
+            raw = response.completion_text or ""
+            data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            ids = []
+            for value in data.get("ids", []):
+                number = int(value)
+                if 1 <= number <= len(hits) and number not in ids:
+                    ids.append(number)
+                if len(ids) == 3:
+                    break
+            if ids:
+                for number in range(1, len(hits) + 1):
+                    if len(ids) == 3:
+                        break
+                    if number not in ids:
+                        ids.append(number)
+                selected = [hits[number - 1] for number in ids[:3]]
+                raw_notes = data.get("notes", {})
+                notes = {
+                    number: re.sub(r"https?://\S+", "", str(raw_notes.get(str(number), "")))[:100].strip()
+                    for number in ids[:3]
+                }
+        except Exception as exc:
+            logger.warning("[reverse_searcher_top3] AI ranking unavailable: %s", type(exc).__name__)
+        return selected, notes
+
     async def _preview_bytes(self, network: Network, hit: SearchHit) -> bytes | None:
         for url in dict.fromkeys((hit.preview_url, hit.thumbnail_url)):
             if not url:
@@ -267,17 +354,23 @@ class SearchService:
                 continue
         return None
 
-    async def result_chain(self, report: SearchReport) -> list:
-        """Build a plain message with inline previews in result order."""
-        if not report.hits:
-            return [Plain(report.format_text())]
+    async def result_chain(self, report: SearchReport, selected: list[SearchHit], notes: dict[int, str]) -> list:
+        """Build the model-ranked answer with inline previews."""
+        if not selected:
+            return [Plain("🔎 图像线索｜五站检索\n\n暂时没有找到可信的匹配结果。")]
         async with Network(proxies=self.config.get("proxies") or None, timeout=25) as network:
             previews = await asyncio.gather(
-                *(self._preview_bytes(network, hit) for hit in report.hits[:3])
+                *(self._preview_bytes(network, hit) for hit in selected)
             )
-        chain = [Plain("🎯 找图结果")]
-        for number, (hit, preview) in enumerate(zip(report.hits[:3], previews), 1):
-            chain.append(Plain("\n" + hit.format_text(number)))
+        chain = [Plain("🔎 图像线索｜五站检索\n按匹配证据整理的三条候选：")]
+        for number, (hit, preview) in enumerate(zip(selected, previews), 1):
+            original_id = report.hits.index(hit) + 1
+            detail = f"\n\n{('①', '②', '③')[number - 1]} {hit.platform} · {hit.evidence}\n{hit.title or hit.source or '相似图片'}"
+            if hit.account:
+                detail += f"\n👤 {hit.account}"
+            if notes.get(original_id):
+                detail += f"\n✦ {notes[original_id]}"
+            chain.append(Plain(detail))
             if preview:
                 chain.append(AstrImage.fromBytes(preview))
             else:
@@ -285,5 +378,5 @@ class SearchService:
         if report.failures:
             failed = "；".join(f"{LABELS[name]}：{report.failures[name]}" for name in ENGINES if name in report.failures)
             chain.append(Plain("\n未完成的引擎：" + failed))
-        chain.append(Plain("\n⚠️ 识图存在误差，请自行核对。"))
+        chain.append(Plain("\n\n识图线索可能有误，请对照原图核实。"))
         return chain

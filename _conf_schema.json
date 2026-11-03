@@ -1,4 +1,10 @@
 {
+  "ranking_provider_id": {
+    "description": "复核搜图候选的 AstrBot 模型供应商；留空则使用当前会话模型",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider"
+  },
   "proxies": {
     "description": "HTTP 代理地址",
     "type": "string",
