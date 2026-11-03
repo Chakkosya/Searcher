@@ -1,6 +1,6 @@
-name: reverse_searcher_top3
-display_name: 五引擎找图 Top 3
-desc: 五个引擎同时搜图，合并去重后以文字返回前三条匹配
+name: reverse_searcher
+display_name:  reverse_searcher
+desc: 多引擎同时搜图，合并去重后以文字返回前三条匹配
 version: 0.2.0
 author: Searcher contributors
 tags:
