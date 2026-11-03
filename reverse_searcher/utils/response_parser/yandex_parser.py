@@ -48,10 +48,12 @@ class YandexResponse(BaseSearchResponse[YandexItem]):
         if not data_state:
             # 无 data-state：可能是被 CAPTCHA 拦截、未登录或页面结构变化
             if "captcha" in resp_data.lower():
+                self.debug_info = "页面要求验证码，未取得图片候选"
                 logger.warning(
                     "[Yandex] 响应疑似 CAPTCHA 验证页，建议在插件配置的 yandex_cookies 中填写 Yandex Cookie"
                 )
             else:
+                self.debug_info = "页面缺少图片候选数据"
                 logger.warning(
                     "[Yandex] 响应缺少 data-state（页面结构可能已变化或需登录），解析结果为空"
                 )
@@ -102,8 +104,10 @@ class YandexResponse(BaseSearchResponse[YandexItem]):
                     self.raw.append(item)
                 except Exception:
                     continue
+            if not self.raw:
+                self.debug_info = "页面返回空候选列表"
         except json.JSONDecodeError:
-            pass
+            self.debug_info = "页面候选数据格式错误"
 
     @override
     def show_result(self) -> str:

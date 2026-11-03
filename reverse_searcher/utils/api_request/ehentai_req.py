@@ -89,4 +89,6 @@ class EHentai(BaseSearchReq[EHentaiResponse]):
             data=data,
             files=files,
         )
+        if resp.status_code >= 400:
+            raise ValueError(f"E-Hentai 返回 HTTP {resp.status_code}")
         return EHentaiResponse(resp.text, resp.url)

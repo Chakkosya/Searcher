@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from io import BytesIO
 from types import TracebackType
 from typing import Any, Generic, TypeVar
 
+from PIL import Image
 from astrbot.api import logger
 
 from ..network import RESP, Network
@@ -50,7 +52,7 @@ class BaseSearchReq(Network, ABC, Generic[T]):
         raise NotImplementedError
 
     async def _upload_image(self, file: FileContent) -> str:
-        """上传图片到临时图床（catbox → fallback chain）"""
+        """上传图片并返回可直接读取的图片地址。"""
         if not file:
             raise ValueError("File content is empty or None")
 
@@ -94,32 +96,29 @@ class BaseSearchReq(Network, ABC, Generic[T]):
                 resp.raise_for_status()
                 text = resp.text.strip()
 
-                # 尝试 JSON 解析
+                url = ""
                 if json_path:
                     try:
                         obj = json.loads(text)
                         url = obj
                         for key in json_path:
                             url = url[key]
-                        if isinstance(url, str) and url.startswith("http"):
-                            url = (
-                                url.replace("http://", "https://", 1)
-                                if url.startswith("http://")
-                                else url
-                            )
-                            # tmpfiles.org 返回的是 HTML 展示页，图片实际在 /dl/ 路径下
-                            if "tmpfiles.org/" in url and "/dl/" not in url:
-                                url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                            return url
                     except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                         pass
-
-                # 纯文本 URL 响应
-                if text.startswith("http"):
+                else:
                     url = text
-                    if "tmpfiles.org/" in url and "/dl/" not in url:
-                        url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                    return url
+                if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    raise ValueError("图床未返回图片地址")
+                if url.startswith("http://"):
+                    url = "https://" + url.removeprefix("http://")
+                if "tmpfiles.org/" in url and "/dl/" not in url:
+                    url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+
+                image_resp = await self._client.get(url)
+                image_resp.raise_for_status()
+                with Image.open(BytesIO(image_resp.content)) as image:
+                    image.verify()
+                return str(image_resp.url)
             except Exception as e:
                 last_error = e
                 logger.debug(

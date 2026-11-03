@@ -66,5 +66,7 @@ class Yandex(BaseSearchReq[YandexResponse]):
         resp = await self._send_request(
             method="get", params=params, headers=headers, timeout=30
         )
+        if resp.status_code >= 400:
+            raise ValueError(f"Yandex 返回 HTTP {resp.status_code}")
 
         return YandexResponse(resp.text, resp.url, **kwargs)

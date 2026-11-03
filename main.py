@@ -23,7 +23,9 @@ REFUSAL = re.compile(
 )
 IMAGE_URL = re.compile(r"https?://[^\s<>]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>]*)?", re.I)
 NEGATED_SEARCH = re.compile(r"(?:不要|别|不用|无需).{0,3}(?:以图搜图|搜图|找鸡)")
-IMAGE_FOLLOWUP = re.compile(r"图片|这张图|那张图|同一张|上一张|漫画|角色|人物|出处|原图|名字|这是谁")
+IMAGE_FOLLOWUP = re.compile(r"图片|这张图|那张图|这张呢|那张呢|同一张|上一张|漫画|角色|人物|出处|原图|名字|这是谁")
+SHORT_IMAGE_FOLLOWUP = re.compile(r"^(?:这|那)(?:张|个)(?:图|图片)?(?:呢|怎么样|如何|也查一下)?[？?]?$")
+SEARCH_REFUSAL = re.compile(r"(?:不能|无法|没法|不方便).{0,30}(?:找|查|提供|辨认).{0,20}(?:出处|来源|原图|图源|链接|角色|人物|作品|影片)")
 RECENT_IMAGE_SECONDS = 120
 
 
@@ -49,6 +51,22 @@ def image_ref_from_event(event: AstrMessageEvent) -> str | None:
             return ref
     match = IMAGE_URL.search(getattr(event.message_obj, "message_str", "") or "")
     return match.group(0) if match else None
+
+
+def recent_dialogue_text(run_context) -> str:
+    lines = []
+    for message in (getattr(run_context, "messages", None) or [])[-6:]:
+        role = getattr(message, "role", "")
+        if role not in ("user", "assistant"):
+            continue
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            content_text = content
+        else:
+            content_text = "".join(part.text for part in (content or []) if isinstance(part, TextPart))
+        if content_text.strip():
+            lines.append(f"{role}: {content_text[:400]}")
+    return "\n".join(lines)
 
 
 def replace_final_reply(resp, components: list) -> None:
@@ -139,7 +157,7 @@ class ReverseSearcherTop3(Star):
                 ).mark_as_temp()
             )
 
-    async def request_wants_search(self, text: str, origin: str) -> bool:
+    async def request_wants_search(self, text: str, origin: str, dialogue: str = "") -> bool:
         """Classify a refused request before forcing a reverse image search."""
         try:
             provider_id = self.config.get("ranking_provider_id") or await self.context.get_current_chat_provider_id(umo=origin)
@@ -147,8 +165,10 @@ class ReverseSearcherTop3(Star):
                 chat_provider_id=provider_id,
                 prompt=(
                     "判断这条用户请求是否要求根据图片查找出处、原图、相似图片、作品、角色、人物身份或公开账号。"
-                    "描述、评价、编辑、翻译图片和普通聊天回答 false。只依据用户请求，不依据助手的拒绝措辞。"
-                    "只返回 JSON：{\"search\":true} 或 {\"search\":false}。\n用户请求：" + text
+                    "结合最近对话理解‘这张呢’等追问。描述、评价、编辑、翻译图片和普通聊天回答 false。"
+                    "助手的拒绝可帮助理解上下文，但不能单独决定。"
+                    "只返回 JSON：{\"search\":true} 或 {\"search\":false}。\n最近对话："
+                    + dialogue + "\n最新用户请求：" + text
                 ),
                 system_prompt="你只判断用户是否提出了图片检索需求。",
             )
@@ -190,15 +210,27 @@ class ReverseSearcherTop3(Star):
         if prepared is None and NEGATED_SEARCH.search(text):
             return
         choices = getattr(getattr(resp, "raw_completion", None), "choices", None) or []
-        refused = bool(REFUSAL.search(getattr(resp, "completion_text", "") or "")) or any(
+        reply_text = getattr(resp, "completion_text", "") or ""
+        if not reply_text:
+            reply_text = "\n".join(
+                part.text for part in (getattr(getattr(resp, "result_chain", None), "chain", None) or [])
+                if isinstance(part, Plain)
+            )
+        refused = bool(REFUSAL.search(reply_text)) or any(
             getattr(getattr(choice, "message", None), "refusal", None) for choice in choices
         )
         if prepared is None:
             if not has_image or not refused or event.get_extra("reverse_search_attempted"):
                 return
             if not event.get_extra("reverse_search_requested"):
-                if not await self.request_wants_search(text, event.unified_msg_origin):
-                    return
+                search_specific_refusal = bool(
+                    SHORT_IMAGE_FOLLOWUP.fullmatch(text.strip())
+                    and SEARCH_REFUSAL.search(reply_text)
+                )
+                if not search_specific_refusal:
+                    dialogue = recent_dialogue_text(run_context)
+                    if not await self.request_wants_search(text, event.unified_msg_origin, dialogue):
+                        return
             answer = await self.search_tool.call(run_context, image_url=image_ref)
             prepared = event.get_extra("reverse_search_final_chain")
             if prepared is None:

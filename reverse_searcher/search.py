@@ -208,13 +208,18 @@ class SearchService:
         counts: dict[str, int] = {}
         for engine, response in zip(ENGINES, responses):
             if isinstance(response, BaseException):
-                logger.warning("[reverse_searcher_top3] %s search failed: %s", engine, type(response).__name__)
-                failures[engine] = str(response)[:120] if isinstance(response, ValueError) else type(response).__name__
+                logger.warning("[reverse_searcher_top3] %s search failed: %s", engine, response)
+                failures[engine] = str(response)[:120] if isinstance(response, (ValueError, RuntimeError)) else type(response).__name__
                 counts[engine] = 0
                 continue
             engine_hits = _from_response(engine, response)
             counts[engine] = len(engine_hits)
             hits.extend(engine_hits)
+            if not engine_hits:
+                if engine == "google" and getattr(response, "ai_overview", ""):
+                    failures[engine] = "仅返回 AI 概览，未返回图片候选"
+                elif engine in ("google", "yandex") and getattr(response, "debug_info", ""):
+                    failures[engine] = str(response.debug_info)[:120]
         return SearchReport(hits, failures, counts)
 
     async def rank(self, report: SearchReport, query: str, context, origin: str, image_ref: str | None = None):

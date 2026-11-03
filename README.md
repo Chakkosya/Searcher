@@ -29,11 +29,11 @@ AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、
 
 结果模板可使用 `{query}`（用户问题）和 `{count}`（返回条数）。每条线索还可使用 `{rank}`、`{rank_symbol}`、`{platform}`、`{match}`、`{keyword}`、`{name}`、`{account}`、`{name_line}`、`{account_line}`、`{reason}`、`{reason_line}`、`{engines}`。其中 `name_line`、`account_line` 和 `reason_line` 在没有数据时为空。`result_engine_summary_template` 可使用 `{engine_counts}`，`result_failures_template` 可使用 `{failures}`。要显示字面量大括号，写成 `{{` 和 `}}`。
 
-五个引擎会并发尝试。未配置 Google Key、遭遇验证码或某个引擎出错时，其余引擎仍返回结果，消息末尾列出各引擎候选数与未完成的引擎。模型未返回有效的前三条选择时，插件会说明复核失败，不会自行挑选前三条。
+五个引擎会并发尝试。Google Lens 和 Yandex 搜索本地图片前会使用临时图床；插件会读取上传后的地址，确认拿到的确实是图片，再交给搜索引擎。未配置 Google Key、图床只返回 HTML、遭遇验证码或某个引擎出错时，其余引擎仍返回结果。消息末尾分别列出各引擎候选数与未完成原因；E-Hentai 等引擎的 HTTP 错误不会再显示成普通的零匹配。模型未返回有效的前三条选择时，插件会说明复核失败，不会自行挑选前三条。
 
 ## 拒绝后的搜图
 
-AI 会先判断是否调用工具。只有带图片的搜图需求被 LLM 以拒绝语句结束，插件才会补调 `reverse_search_top3`：明确的搜图关键词直接作为需求依据，其余请求由所选模型再判断一次。普通图片聊天不会因 AI 拒绝而触发搜图。AI 调用工具时若当前没有图片，会按 `ai_image_wait_seconds` 等待下一张图片；关键词触发则按 `keyword_image_wait_seconds` 等待。两分钟内追问同一会话中刚发送的图片也可复用该图片。关闭 AstrBot 的流式输出和平台分段回复，才能确保完整图文结果在同一条消息中发送。
+AI 会先判断是否调用工具。只有带图片的搜图需求被 LLM 以拒绝语句结束，插件才会补调 `reverse_search_top3`：明确的搜图关键词直接作为需求依据，其余请求由所选模型结合最近对话判断。像“这张呢”这样的短追问，如果 AI 明确拒绝查找出处，也会补调搜图。普通图片聊天不会因 AI 拒绝而触发搜图。AI 调用工具时若当前没有图片，会按 `ai_image_wait_seconds` 等待下一张图片；关键词触发则按 `keyword_image_wait_seconds` 等待。两分钟内追问同一会话中刚发送的图片也可复用该图片。关闭 AstrBot 的流式输出和平台分段回复，才能确保完整图文结果在同一条消息中发送。
 
 ## 已知限制
 
