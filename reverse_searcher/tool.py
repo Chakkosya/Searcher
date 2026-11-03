@@ -16,8 +16,8 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
     name: str = "reverse_search_top3"
     description: str = (
         "搜索当前消息或引用消息里的图片，同时调用 AnimeTrace、SauceNAO、E-Hentai、"
-        "Google Lens 和 Yandex，返回合并后的前三条匹配。用户询问图片内容、出处、"
-        "角色或相似图片时调用。"
+        "Google Lens 和 Yandex，返回合并后的前三条匹配。当用户要找图片出处、"
+        "原图、相似图片、角色、名称或公开账号时，判断是否需要调用此工具。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -45,6 +45,7 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
             await event.send(event.plain_result("🔍 正在全网找图，请稍候…"))
             report = await self.service.search(image_ref=image_ref, image_base64=image_base64)
             await event.send(event.chain_result(await self.service.result_chain(report)))
+            event.set_extra("reverse_search_result_sent", True)
             return "已发送五引擎搜图结果。"
         except Exception as exc:
             return f"搜图失败：{exc}"
