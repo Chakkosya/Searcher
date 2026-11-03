@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from astrbot.api import logger
+from astrbot.api.message_components import Plain
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -18,7 +19,8 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "搜索当前消息或引用消息里的图片，同时调用 AnimeTrace、SauceNAO、E-Hentai、"
         "Google Lens 和 Yandex，每个引擎取前五条，由模型选择前三条匹配。当用户要找图片出处、"
-        "原图、相似图片、角色、名称或公开账号时，判断是否需要调用此工具。"
+        "原图、相似图片、作品或角色、图片中的人物身份或公开账号时才调用此工具。"
+        "仅发送图片，或要求描述、评价、编辑图片时不要调用。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -39,6 +41,8 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
         from ..main import image_component_from_event, image_ref_from_event
 
         event = context.context.event
+        query = event.get_extra("reverse_search_query") or getattr(event.message_obj, "message_str", "") or ""
+        event.set_extra("reverse_search_attempted", True)
         image_ref = image_ref_from_event(event) or event.get_extra("reverse_search_image_ref") or kwargs.get("image_url")
         image_base64 = kwargs.get("image_base64")
         component = image_component_from_event(event) or event.get_extra("reverse_search_image_component")
@@ -61,7 +65,6 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
                 except Exception as exc:
                     logger.warning("[reverse_searcher_top3] Progress message failed: %s", type(exc).__name__)
             report = await self.service.search(image_ref=image_ref, image_base64=image_base64)
-            query = event.get_extra("reverse_search_query") or getattr(event.message_obj, "message_str", "") or ""
             selected, notes = await self.service.rank(
                 report,
                 query,
@@ -73,4 +76,6 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
             event.set_extra("reverse_search_final_chain", chain)
             return "\n".join(part.text for part in chain if hasattr(part, "text"))
         except Exception as exc:
-            return f"搜图失败：{exc}"
+            error = f"搜图失败：{exc}"
+            event.set_extra("reverse_search_final_chain", [Plain(error)])
+            return error

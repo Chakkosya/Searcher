@@ -6,7 +6,7 @@ AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、
 
 使用 AstrBot 4.23.2 或更新版本。将本仓库目录放到 AstrBot 的 `data/plugins/reverse_searcher`，安装 `requirements.txt` 中的依赖并重启 AstrBot。可直接发送“以图搜图”“找鸡”或“搜图”加图片，也可回复一条含图片的消息提问。也可以先提出搜图要求、再发送图片；等待时长在插件配置中设置，同一会话和发送者的图片会接续该请求。插件提供 `reverse_search_top3` 工具，由 AI 根据用户问题判断是否调用。
 
-工具会把五个引擎各自的前五条原始候选交给指定的 AstrBot 模型复核，由模型选出不重复的前三条；结果经 AstrBot 的正常回复流程发送，不由工具主动发送最终结果。每条线索后附预览图，优先使用引擎给出的原图地址，失败时使用缩略图。开始搜索时会先发送一条可配置的等待提示。
+工具会把五个引擎各自的前五条原始候选交给指定的 AstrBot 模型复核，由模型选出不重复的前三条；结果经 AstrBot 的正常回复流程作为一条图文消息发送，不由工具主动发送最终结果。每条线索后附预览图，优先使用引擎给出的原图地址，失败时使用缩略图。开始搜索时会先发送一条可配置的等待提示。
 
 ## 配置
 
@@ -24,20 +24,22 @@ AstrBot 插件：同一张图片同时交给 AnimeTrace、SauceNAO、E-Hentai、
 - `keyword_image_wait_prompt` / `ai_image_wait_prompt`：两种入口的等待提示。可写 `{seconds}`，发送时替换为对应秒数。
 - `search_progress_prompt`：开始搜索时发送的等待提示；留空则不发送。
 - `result_header_template` / `result_item_template` / `result_footer_template`：结果标题、每条线索、结尾的文字格式。每条预览图固定跟在该条线索文字后。
+- `result_engine_summary_template`：显示五个引擎各自返回的候选数量；留空则不显示。
 - `result_empty_text` / `result_no_preview_text` / `result_failures_template`：无匹配、无预览图、部分引擎失败时的文字。
 
-结果模板可使用 `{query}`（用户问题）和 `{count}`（返回条数）。每条线索还可使用 `{rank}`、`{rank_symbol}`、`{platform}`、`{match}`、`{keyword}`、`{name}`、`{account}`、`{name_line}`、`{account_line}`、`{reason}`、`{reason_line}`、`{engines}`。其中 `name_line`、`account_line` 和 `reason_line` 在没有数据时为空。`result_failures_template` 另可使用 `{failures}`。要显示字面量大括号，写成 `{{` 和 `}}`。
+结果模板可使用 `{query}`（用户问题）和 `{count}`（返回条数）。每条线索还可使用 `{rank}`、`{rank_symbol}`、`{platform}`、`{match}`、`{keyword}`、`{name}`、`{account}`、`{name_line}`、`{account_line}`、`{reason}`、`{reason_line}`、`{engines}`。其中 `name_line`、`account_line` 和 `reason_line` 在没有数据时为空。`result_engine_summary_template` 可使用 `{engine_counts}`，`result_failures_template` 可使用 `{failures}`。要显示字面量大括号，写成 `{{` 和 `}}`。
 
-五个引擎会并发尝试。未配置 Google Key、遭遇验证码或某个引擎出错时，其余引擎仍返回结果，消息末尾列出未完成的引擎。
+五个引擎会并发尝试。未配置 Google Key、遭遇验证码或某个引擎出错时，其余引擎仍返回结果，消息末尾列出各引擎候选数与未完成的引擎。模型未返回有效的前三条选择时，插件会说明复核失败，不会自行挑选前三条。
 
 ## 拒绝后的搜图
 
-AI 会先判断是否调用工具。带图片的请求若被 LLM 以拒绝语句结束，或用户明确要求搜图而 LLM 未调用工具，插件会补调注册的 `reverse_search_top3` 工具，把搜索结果交给所选模型复核，再将模型选出的结果作为本次 AstrBot 回复。AI 调用工具时若当前没有图片，会按 `ai_image_wait_seconds` 等待下一张图片；关键词触发则按 `keyword_image_wait_seconds` 等待。两分钟内追问同一会话中刚发送的图片也可复用该图片。要让替换后的回复完整生效，建议关闭 AstrBot 的流式输出；流式模式中已发出的文字片段无法撤回。
+AI 会先判断是否调用工具。只有带图片的搜图需求被 LLM 以拒绝语句结束，插件才会补调 `reverse_search_top3`：明确的搜图关键词直接作为需求依据，其余请求由所选模型再判断一次。普通图片聊天不会因 AI 拒绝而触发搜图。AI 调用工具时若当前没有图片，会按 `ai_image_wait_seconds` 等待下一张图片；关键词触发则按 `keyword_image_wait_seconds` 等待。两分钟内追问同一会话中刚发送的图片也可复用该图片。关闭 AstrBot 的流式输出和平台分段回复，才能确保完整图文结果在同一条消息中发送。
 
 ## 已知限制
 
-- 五个引擎的相似度含义不同，前三条是按可用证据排序的候选结果，不能把它们当作统一概率。名称与账号只取搜索结果明确给出的字段或页面地址中的公开账号路径。
-- 纯文本模型依据标题、平台、相似度和引擎交叉命中判断；支持图像的模型还可比较所有可用的候选预览。一次请求最多附带 26 张图（用户原图及 25 条候选预览），模型供应商需允许对应的图像数量。模型不可用或未返回有效选择时，按引擎证据顺序返回候选。
+- 五个引擎的相似度含义不同，模型会结合图片和可用证据选择候选，不能把各引擎分数当作统一概率。名称与账号只取搜索结果明确给出的字段或页面地址中的公开账号路径。
+- 纯文本模型依据标题、平台、相似度和引擎交叉命中判断；支持图像的模型还可比较所有可用的候选预览。一次请求最多附带 26 张图（用户原图及 25 条候选预览），模型供应商需允许对应的图像数量；图像请求失败时会以文字候选再试一次。
+- 若 AstrBot 平台配置为对所有结果启用“分段回复”，它仍会把图文消息拆开；需在 AstrBot 中关闭该设置。
 - 部分引擎只提供缩略图，或预览图地址无法下载，此时该条结果会显示“预览图：暂无”。
 - Google Lens 需要有效 Key。Yandex 的网页结果可能受到验证码或页面改版影响。
 - 引用消息需由平台适配器提供被引用的图片组件；引用内容无法读取时，请重新发送图片。

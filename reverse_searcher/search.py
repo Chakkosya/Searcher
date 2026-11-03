@@ -30,6 +30,7 @@ LABELS = {
 DEFAULT_HEADER = "🎯 **找图结果**"
 DEFAULT_ITEM = "\n\n{rank_symbol} 🌐 平台：{platform}\n🔎 匹配：{match}\n🔑 关键词：{keyword}{name_line}{account_line}"
 DEFAULT_FOOTER = "\n\n⚠️ 识图存在误差，请自行核对哦～"
+DEFAULT_ENGINE_SUMMARY = "\n\n📡 五引擎候选：{engine_counts}"
 OLD_DEFAULTS = {
     "result_header_template": "🔎 图像线索｜五站检索\n按匹配证据整理的 {count} 条候选：",
     "result_item_template": "\n\n{rank_symbol} {platform} · {match}\n{keyword}{account_line}{reason_line}",
@@ -94,75 +95,15 @@ class SearchHit:
                 return f"@{name}"
         return ""
 
-    def format_text(self, number: int) -> str:
-        keyword = self.title or self.source or "相似图片"
-        if keyword.startswith(("http://", "https://")):
-            keyword = "相似图片"
-        lines = [f"{number}. 🌐 平台：{self.platform}", f"🔎 关键词：{keyword}"]
-        if self.account:
-            lines.append(f"👤 名称/账号：{self.account}")
-        lines.append(f"🎯 匹配：{self.evidence}")
-        if len(self.engines) > 1:
-            labels = "、".join(LABELS[name] for name in ENGINES if name in self.engines)
-            lines.append(f"📌 搜索引擎：{labels}")
-        return "\n".join(lines)
-
-
 @dataclass
 class SearchReport:
     hits: list[SearchHit]
     failures: dict[str, str]
-
-    def format_text(self) -> str:
-        lines = ["🎯 **找图结果**"]
-        if not self.hits:
-            lines.append("没有得到可用匹配。")
-        for number, hit in enumerate(self.hits[:3], 1):
-            lines.extend(["", hit.format_text(number)])
-        if self.failures:
-            failed = "；".join(
-                f"{LABELS[name]}：{self.failures[name]}"
-                for name in ENGINES
-                if name in self.failures
-            )
-            lines.extend(["", f"未完成的引擎：{failed}"])
-        lines.extend(["", "⚠️ 识图存在误差，请打开来源核对。"])
-        return "\n".join(lines)
-
+    counts: dict[str, int] = field(default_factory=dict)
 
 def _normal_url(url: str) -> str:
     parts = urlsplit(url)
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, ""))
-
-
-def _priority(hit: SearchHit) -> tuple[int, int, float, int, int, int]:
-    direct = 2 if hit.similarity >= 80 else 1 if hit.similarity >= 60 else 0
-    exact = 1 if hit.engine == "google" and hit.group in ("exact", "pages") else 0
-    return (len(hit.engines), max(direct, exact), hit.similarity, bool(hit.preview_url), -hit.rank, -ENGINES.index(hit.engine))
-
-
-def merge_hits(hits: list[SearchHit]) -> list[SearchHit]:
-    merged: dict[str, SearchHit] = {}
-    for hit in hits:
-        if not hit.title and not hit.url:
-            continue
-        key = _normal_url(hit.url) if hit.url else f"{hit.engine}:{hit.title}:{hit.source}"
-        previous = merged.get(key)
-        if previous is None:
-            merged[key] = hit
-        else:
-            engines = previous.engines | hit.engines
-            winner = max((previous, hit), key=_priority)
-            winner.engines = engines
-            full_preview = next(
-                (candidate.preview_url for candidate in (previous, hit)
-                 if candidate.preview_url and candidate.preview_url != candidate.thumbnail_url),
-                "",
-            )
-            winner.preview_url = full_preview or winner.preview_url or previous.preview_url or hit.preview_url
-            winner.thumbnail_url = winner.thumbnail_url or previous.thumbnail_url or hit.thumbnail_url
-            merged[key] = winner
-    return sorted(merged.values(), key=_priority, reverse=True)
 
 
 def _from_response(engine: str, response) -> list[SearchHit]:
@@ -264,32 +205,54 @@ class SearchService:
         )
         hits: list[SearchHit] = []
         failures: dict[str, str] = {}
+        counts: dict[str, int] = {}
         for engine, response in zip(ENGINES, responses):
             if isinstance(response, BaseException):
                 logger.warning("[reverse_searcher_top3] %s search failed: %s", engine, type(response).__name__)
                 failures[engine] = str(response)[:120] if isinstance(response, ValueError) else type(response).__name__
+                counts[engine] = 0
                 continue
-            hits.extend(_from_response(engine, response))
-        return SearchReport(hits, failures)
+            engine_hits = _from_response(engine, response)
+            counts[engine] = len(engine_hits)
+            hits.extend(engine_hits)
+        return SearchReport(hits, failures, counts)
 
     async def rank(self, report: SearchReport, query: str, context, origin: str, image_ref: str | None = None):
         """Let the configured AstrBot model choose three candidates from all engines."""
         hits = report.hits
-        selected: list[SearchHit] = []
-        notes: dict[int, str] = {}
         if not hits:
-            return selected, notes
+            return [], {}
+
+        page_engines: dict[str, set[str]] = {}
+        page_hits: dict[str, list[SearchHit]] = {}
+        for hit in hits:
+            if hit.url:
+                page = _normal_url(hit.url)
+                page_engines.setdefault(page, set()).add(hit.engine)
+                page_hits.setdefault(page, []).append(hit)
+        for page, group in page_hits.items():
+            best_preview = next(
+                (hit.preview_url for hit in group if hit.preview_url and hit.preview_url != hit.thumbnail_url),
+                "",
+            )
+            for hit in group:
+                hit.engines.update(page_engines[page])
+                if best_preview:
+                    hit.preview_url = best_preview
 
         candidates = [
             {
                 "id": number,
                 "platform": hit.platform,
                 "title": hit.title[:180],
+                "page": hit.url[:300],
                 "name": hit.author[:80],
                 "account": hit.account[:80],
                 "source": hit.source[:120],
                 "similarity": hit.similarity,
-                "engines": sorted(hit.engines),
+                "engine": hit.engine,
+                "same_page_engines": sorted(page_engines.get(_normal_url(hit.url), {hit.engine})),
+                "has_preview": bool(hit.preview_url or hit.thumbnail_url),
                 "engine_rank": hit.rank,
                 "exact_page": hit.engine == "google" and hit.group in ("exact", "pages"),
             }
@@ -299,9 +262,12 @@ class SearchService:
             "用户问题：" + (query or "请找出这张图片最可能的出处或角色") + "\n"
             "五个以图搜图引擎的候选结果：\n"
             + json.dumps(candidates, ensure_ascii=False)
+            + "\n各引擎返回数：" + json.dumps(report.counts, ensure_ascii=False)
+            + "\n未完成的引擎：" + json.dumps(report.failures, ensure_ascii=False)
             + "\n每个引擎最多提供五条原始候选。选最符合用户问题、最可能对应原图的前三条，"
             "同一页面只选一次。优先考虑明确相似度、多个引擎相互印证、原图页面和具体名称；"
-            "不要把不同引擎的分数当成同一概率。"
+            "相似度为零表示该引擎没有提供分数，不表示零匹配；不要把不同引擎的分数当成同一概率。"
+            "相关性接近时优先选择有预览图的候选。"
             "只返回 JSON：{\"ids\":[候选id],\"notes\":{\"id\":\"一句简短的匹配依据\"}}。"
             "不要输出链接，不要补造候选中没有的名字或账号。"
         )
@@ -318,22 +284,12 @@ class SearchService:
                 + ", ".join(map(str, preview_ids))
                 + "。有图像能力时，请同时比较画面。"
             )
-        try:
-            provider_id = self.config.get("ranking_provider_id") or await context.get_current_chat_provider_id(umo=origin)
-            request = {
-                "chat_provider_id": provider_id,
-                "prompt": prompt,
-                "system_prompt": "你根据反向搜图结果整理出处线索，只判断候选与用户问题的相关性。",
-            }
-            if image_urls:
-                try:
-                    response = await context.llm_generate(**request, image_urls=image_urls)
-                    if not (response.completion_text or "").lstrip().startswith(("{", "```")):
-                        response = await context.llm_generate(**request)
-                except Exception:
-                    response = await context.llm_generate(**request)
-            else:
-                response = await context.llm_generate(**request)
+        required = min(3, len({
+            _normal_url(hit.url) if hit.url else f"{hit.engine}:{hit.title}:{hit.source}"
+            for hit in hits
+        }))
+
+        def parse_selection(response):
             raw = response.completion_text or ""
             data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
             ids = []
@@ -346,28 +302,35 @@ class SearchService:
                     if key not in seen:
                         ids.append(number)
                         seen.add(key)
-                if len(ids) == 3:
+                if len(ids) == required:
                     break
-            if ids:
-                for hit in merge_hits(hits):
-                    if len(ids) == 3:
-                        break
-                    number = next(index for index, candidate in enumerate(hits, 1) if candidate is hit)
-                    key = _normal_url(hit.url) if hit.url else f"{hit.engine}:{hit.title}:{hit.source}"
-                    if key not in seen:
-                        ids.append(number)
-                        seen.add(key)
-                selected = [hits[number - 1] for number in ids[:3]]
-                raw_notes = data.get("notes", {})
-                notes = {
-                    number: re.sub(r"https?://\S+", "", str(raw_notes.get(str(number), "")))[:100].strip()
-                    for number in ids[:3]
-                }
+            if len(ids) != required:
+                raise ValueError("模型未选出足够的不同候选")
+            raw_notes = data.get("notes", {})
+            notes = {
+                number: re.sub(r"https?://\S+", "", str(raw_notes.get(str(number), "")))[:100].strip()
+                for number in ids
+            }
+            return [hits[number - 1] for number in ids], notes
+
+        try:
+            provider_id = self.config.get("ranking_provider_id") or await context.get_current_chat_provider_id(umo=origin)
+            request = {
+                "chat_provider_id": provider_id,
+                "prompt": prompt,
+                "system_prompt": "你根据反向搜图结果整理出处线索，只判断候选与用户问题的相关性。",
+            }
+            if image_urls:
+                try:
+                    response = await context.llm_generate(**request, image_urls=image_urls)
+                    return parse_selection(response)
+                except Exception as exc:
+                    logger.warning("[reverse_searcher_top3] Visual ranking unavailable: %s", type(exc).__name__)
+            response = await context.llm_generate(**request)
+            return parse_selection(response)
         except Exception as exc:
             logger.warning("[reverse_searcher_top3] AI ranking unavailable: %s", type(exc).__name__)
-        if not selected:
-            selected = merge_hits(hits)[:3]
-        return selected, notes
+            raise ValueError("复核模型未能从搜图候选中选出前三条；请检查所选模型") from exc
 
     async def _preview_bytes(self, network: Network, hit: SearchHit) -> bytes | None:
         for url in dict.fromkeys((hit.preview_url, hit.thumbnail_url)):
@@ -389,14 +352,25 @@ class SearchService:
 
     async def result_chain(self, report: SearchReport, selected: list[SearchHit], notes: dict[int, str], query: str = "") -> list:
         """Build the model-ranked answer with inline previews."""
+        engine_counts = " · ".join(f"{LABELS[name]} {report.counts.get(name, 0)}" for name in ENGINES)
+        common = {"query": query, "count": len(selected), "engine_counts": engine_counts}
+        summary = render_template(
+            self.config.get("result_engine_summary_template", DEFAULT_ENGINE_SUMMARY),
+            DEFAULT_ENGINE_SUMMARY,
+            **common,
+        )
         if not selected:
             default = "🎯 **找图结果**\n\n暂时没有找到可信的匹配结果。"
-            return [Plain(render_template(self._template("result_empty_text", default), default, query=query, count=0))]
+            text = render_template(self._template("result_empty_text", default), default, **common) + summary
+            if report.failures:
+                failed = "；".join(f"{LABELS[name]}：{report.failures[name]}" for name in ENGINES if name in report.failures)
+                default = "\n未完成的引擎：{failures}"
+                text += render_template(self.config.get("result_failures_template", default), default, failures=failed, **common)
+            return [Plain(text)]
         async with Network(proxies=self.config.get("proxies") or None, timeout=25) as network:
             previews = await asyncio.gather(
                 *(self._preview_bytes(network, hit) for hit in selected)
             )
-        common = {"query": query, "count": len(selected)}
         chain = [Plain(render_template(self._template("result_header_template", DEFAULT_HEADER), DEFAULT_HEADER, **common))]
         for number, (hit, preview) in enumerate(zip(selected, previews), 1):
             original_id = report.hits.index(hit) + 1
@@ -429,6 +403,8 @@ class SearchService:
             else:
                 default = "\n预览图：暂无"
                 chain.append(Plain(render_template(self.config.get("result_no_preview_text", default), default, **common)))
+        if summary:
+            chain.append(Plain(summary))
         if report.failures:
             failed = "；".join(f"{LABELS[name]}：{report.failures[name]}" for name in ENGINES if name in report.failures)
             default = "\n未完成的引擎：{failures}"

@@ -57,6 +57,11 @@
     "type": "text",
     "default": "\n\n⚠️ 识图存在误差，请自行核对哦～"
   },
+  "result_engine_summary_template": {
+    "description": "五个引擎的候选数量，可使用 {engine_counts}；留空则不显示",
+    "type": "text",
+    "default": "\n\n📡 五引擎候选：{engine_counts}"
+  },
   "result_empty_text": {
     "description": "没有匹配结果时的回复文字",
     "type": "text",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -10,7 +11,7 @@ from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Plain, Reply
 from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
-from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
 from .reverse_searcher.search import SearchService
 from .reverse_searcher.tool import ReverseSearchTool
@@ -90,9 +91,12 @@ class ReverseSearcherTop3(Star):
                 event.set_extra("reverse_search_image_ref", recent[0])
                 event.set_extra("reverse_search_image_component", recent[1])
         triggers = self.config.get("trigger_keywords") or ["以图搜图", "找鸡", "搜图"]
+        direct_keyword = text.strip() in triggers
         explicit = not NEGATED_SEARCH.search(text) and (
-            text.strip() == "搜图" or any(word and word in text for word in triggers)
+            direct_keyword or any(word and word in text for word in triggers)
         )
+        if explicit and not direct_keyword:
+            explicit = await self.request_wants_search(text, event.unified_msg_origin)
         pending = self.pending_search.get(key)
         if pending and now > pending[0]:
             self.pending_search.pop(key, None)
@@ -131,9 +135,32 @@ class ReverseSearcherTop3(Star):
         elif event.get_extra("reverse_search_image_ref"):
             req.extra_user_content_parts.append(
                 TextPart(
-                    text="用户正在追问同一会话里刚发送的图片；如需搜图，可调用 reverse_search_top3 工具。"
+                    text="用户正在追问同一会话里刚发送的图片。只有明确要求查找出处、角色、原图或相似图片时，才调用 reverse_search_top3 工具。"
                 ).mark_as_temp()
             )
+
+    async def request_wants_search(self, text: str, origin: str) -> bool:
+        """Classify a refused request before forcing a reverse image search."""
+        try:
+            provider_id = self.config.get("ranking_provider_id") or await self.context.get_current_chat_provider_id(umo=origin)
+            response = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=(
+                    "判断这条用户请求是否要求根据图片查找出处、原图、相似图片、作品、角色、人物身份或公开账号。"
+                    "描述、评价、编辑、翻译图片和普通聊天回答 false。只依据用户请求，不依据助手的拒绝措辞。"
+                    "只返回 JSON：{\"search\":true} 或 {\"search\":false}。\n用户请求：" + text
+                ),
+                system_prompt="你只判断用户是否提出了图片检索需求。",
+            )
+            raw = response.completion_text or ""
+            return json.loads(raw[raw.index("{"):raw.rindex("}") + 1]).get("search") is True
+        except Exception:
+            return False
+
+    @filter.on_decorating_result()
+    async def keep_search_reply_together(self, event):
+        if event.get_extra("reverse_search_final_chain") and event.get_result():
+            event.get_result().set_result_content_type(ResultContentType.GENERAL_RESULT)
 
     @filter.on_agent_done()
     async def search_after_refusal(self, event, run_context, resp):
@@ -167,8 +194,11 @@ class ReverseSearcherTop3(Star):
             getattr(getattr(choice, "message", None), "refusal", None) for choice in choices
         )
         if prepared is None:
-            if not has_image or not (event.get_extra("reverse_search_requested") or refused):
+            if not has_image or not refused or event.get_extra("reverse_search_attempted"):
                 return
+            if not event.get_extra("reverse_search_requested"):
+                if not await self.request_wants_search(text, event.unified_msg_origin):
+                    return
             answer = await self.search_tool.call(run_context, image_url=image_ref)
             prepared = event.get_extra("reverse_search_final_chain")
             if prepared is None:
