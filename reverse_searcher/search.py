@@ -27,7 +27,7 @@ LABELS = {
     "google": "Google Lens",
     "yandex": "Yandex",
 }
-DEFAULT_HEADER = "🔎 图像线索｜五站检索\n按匹配证据整理的三条候选："
+DEFAULT_HEADER = "🔎 图像线索｜五站检索\n按匹配证据整理的 {count} 条候选："
 DEFAULT_ITEM = "\n\n{rank_symbol} {platform} · {match}\n{keyword}{account_line}{reason_line}"
 DEFAULT_FOOTER = "\n\n识图线索可能有误，请对照原图核实。"
 

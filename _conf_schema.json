@@ -40,7 +40,7 @@
   "result_header_template": {
     "description": "结果标题，可使用 {query}、{count}",
     "type": "text",
-    "default": "🔎 图像线索｜五站检索\n按匹配证据整理的三条候选："
+    "default": "🔎 图像线索｜五站检索\n按匹配证据整理的 {count} 条候选："
   },
   "result_item_template": {
     "description": "每条结果的文字模板，字段见 README；预览图固定接在该条文字后",
