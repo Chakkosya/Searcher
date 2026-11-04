@@ -12,14 +12,14 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from .search import ENGINES, SearchReport, SearchService
+from .search import ENGINES, SearchService
 
 
 @dataclass(config={"arbitrary_types_allowed": True})
 class ReverseSearchTool(FunctionTool[AstrAgentContext]):
     name: str = "reverse_search_top3"
     description: str = (
-        "搜索当前消息或引用消息里的图片，结合画面与意图选择合适的引擎，每个引擎最多六条候选，"
+        "搜索当前消息或引用消息里的图片，结合画面与意图选择合适的引擎，按配置限制各引擎候选数，"
         "不确定时由 Google Lens 和 Yandex 补搜。"
         "当用户要找图片出处、"
         "原图、相似图片、作品或角色、图片中的人物身份或公开账号时才调用此工具。"
@@ -56,10 +56,11 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
         show_all = kwargs.get("show_all", bool(engine and re.search(r"全部|所有|候选|结果", query))) is True
         if show_all and not engine:
             return "请指定要展开候选的引擎。"
-        cached = self.service.session(key)
+        event_session = event.get_extra("reverse_search_session")
+        cached = event_session or self.service.session(key)
         reuse = bool(engine and cached) and not (
-            image_component_from_event(event) or image_ref_from_event(event)
-            or kwargs.get("image_url") or kwargs.get("image_base64")
+            kwargs.get("image_url") or kwargs.get("image_base64")
+            or (not event_session and (image_component_from_event(event) or image_ref_from_event(event)))
         )
         image_ref = image_ref_from_event(event) or event.get_extra("reverse_search_image_ref") or kwargs.get("image_url")
         image_base64 = kwargs.get("image_base64")
@@ -89,12 +90,9 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
                 image = cached.image
                 if engine not in cached.report.counts:
                     cached.report.extend(await self.service.search(image, [engine]))
-                report = SearchReport(
-                    [hit for hit in cached.report.hits if hit.engine == engine],
-                    {engine: cached.report.failures[engine]} if engine in cached.report.failures else {},
-                    {engine: cached.report.counts[engine]},
-                )
-                selected, certain = report.hits, False
+                report = cached.report
+                selected = [hit for hit in report.hits if hit.engine == engine]
+                certain = False
                 self.service.remember(key, image, cached.report, cached.query)
             else:
                 image = await self.service._image_bytes(image_ref, image_base64)
@@ -103,6 +101,7 @@ class ReverseSearchTool(FunctionTool[AstrAgentContext]):
                     engine=engine, show_all=show_all, dialogue=recent_dialogue_text(context),
                 )
                 self.service.remember(key, image, report, query)
+            event.set_extra("reverse_search_session", self.service.session(key))
             chain = await self.service.result_chain(
                 report, selected, query, self.astrbot_context, event.unified_msg_origin,
                 certain=certain, show_all=show_all or reuse,

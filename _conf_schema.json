@@ -5,6 +5,66 @@
     "default": "",
     "_special": "select_provider"
   },
+  "animetrace_max_results": {
+    "description": "AnimeTrace 每次搜索的候选上限；用于模型复核、数量统计及缓存，受引擎实际返回数量限制",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "saucenao_max_results": {
+    "description": "SauceNAO 每次搜索的候选上限；用于模型复核、数量统计及缓存，受引擎实际返回数量限制",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "ehentai_max_results": {
+    "description": "E-Hentai 每次搜索的候选上限；用于模型复核、数量统计及缓存，受引擎实际返回数量限制",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "google_max_results": {
+    "description": "Google Lens 每次搜索的候选上限；用于模型复核、数量统计及缓存，受引擎实际返回数量限制",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "yandex_max_results": {
+    "description": "Yandex 每次搜索的候选上限；用于模型复核、数量统计及缓存，受引擎实际返回数量限制",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "candidate_cache_seconds": {
+    "description": "搜索结果与原图缓存时长（秒）；用于同一会话、同一发送者的候选追问和补搜，默认 600 秒，重启后清空",
+    "type": "int",
+    "default": 600,
+    "slider": {
+      "min": 60,
+      "max": 3600,
+      "step": 60
+    }
+  },
   "proxies": {
     "description": "HTTP 代理地址",
     "type": "string",
@@ -113,16 +173,6 @@
     "type": "text",
     "default": "用一句话提醒用户可以追问某个引擎的全部候选，例如“把 Yandex 的全部结果给我”；也可以指定其他引擎补搜。",
     "description": "提醒用户查看某引擎全部候选或指定引擎补搜的 AI 提示词"
-  },
-  "candidate_cache_seconds": {
-    "description": "同一会话、同一发送者可追问上次搜图候选的有效秒数；重启后缓存清空",
-    "type": "int",
-    "default": 600,
-    "slider": {
-      "min": 60,
-      "max": 3600,
-      "step": 60
-    }
   },
   "serpapi_keys": {
     "description": "Google Lens 的 SerpAPI Key 列表，每项一个 Key；每次搜索轮换起始 Key，失败时尝试下一个",

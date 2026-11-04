@@ -30,7 +30,7 @@ LABELS = {
     "yandex": "Yandex",
 }
 GENERAL_ENGINES = ("google", "yandex")
-MAX_CANDIDATES = 6
+DEFAULT_MAX_CANDIDATES = 6
 
 
 def parse_json(text: str) -> dict:
@@ -105,7 +105,7 @@ def _normal_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, ""))
 
 
-def _from_response(engine: str, response) -> list[SearchHit]:
+def _from_response(engine: str, response, limit: int = DEFAULT_MAX_CANDIDATES) -> list[SearchHit]:
     hits = []
     if engine == "animetrace":
         rank = 0
@@ -113,10 +113,10 @@ def _from_response(engine: str, response) -> list[SearchHit]:
             for character in item.characters:
                 rank += 1
                 hits.append(SearchHit(engine, rank, character.name, source=character.work))
-                if rank == MAX_CANDIDATES:
+                if rank == limit:
                     return hits
         return hits
-    for rank, item in enumerate(response.raw[:MAX_CANDIDATES], 1):
+    for rank, item in enumerate(response.raw[:limit], 1):
         source = getattr(item, "source", "") or getattr(item, "index_name", "") or ""
         if engine == "ehentai":
             source = "E-Hentai"
@@ -142,6 +142,9 @@ class SearchService:
         self.config = config
         self.sessions: dict[tuple[str, str], SearchSession] = {}
         self.google_key_index = 0
+
+    def candidate_limit(self, engine: str) -> int:
+        return max(1, int(self.config.get(f"{engine}_max_results", DEFAULT_MAX_CANDIDATES)))
 
     def session(self, key: tuple[str, str]) -> SearchSession | None:
         now = time.monotonic()
@@ -228,13 +231,14 @@ class SearchService:
 
     async def _search_one(self, engine: str, image: bytes):
         config = self.config
+        limit = self.candidate_limit(engine)
         cookies = config.get(f"{engine}_cookies") or None
         async with Network(proxies=config.get("proxies") or None, cookies=cookies, timeout=45) as network:
             if engine == "animetrace":
                 request = AnimeTrace(network=network, is_multi=False, ai_detect=False)
                 return await request.search(file=image, model="full_game_model_kira")
             if engine == "saucenao":
-                request = SauceNAO(network=network, api_key=config.get("saucenao_api_key") or None, numres=MAX_CANDIDATES, minsim=30)
+                request = SauceNAO(network=network, api_key=config.get("saucenao_api_key") or None, numres=limit, minsim=30)
                 return await request.search(file=image)
             if engine == "ehentai":
                 request = EHentai(network=network, is_ex=False, similar=True)
@@ -248,9 +252,9 @@ class SearchService:
                     start_index=self.google_key_index,
                 )
                 self.google_key_index += 1
-                return await request.search(file=image, country="HK", hl="zh-CN", max_results=MAX_CANDIDATES)
+                return await request.search(file=image, country="HK", hl="zh-CN", max_results=limit)
             request = Yandex(network=network, use_ru_fallback=True)
-            return await request.search(file=image, max_results=MAX_CANDIDATES)
+            return await request.search(file=image, max_results=limit)
 
     async def search(self, image: bytes, engines: list[str]) -> SearchReport:
         responses = await asyncio.gather(
@@ -266,7 +270,7 @@ class SearchService:
                 failures[engine] = str(response)[:120] if isinstance(response, (ValueError, RuntimeError)) else type(response).__name__
                 counts[engine] = 0
                 continue
-            engine_hits = _from_response(engine, response)
+            engine_hits = _from_response(engine, response, self.candidate_limit(engine))
             counts[engine] = len(engine_hits)
             hits.extend(engine_hits)
             if not engine_hits:
@@ -277,7 +281,7 @@ class SearchService:
         return SearchReport(hits, failures, counts)
 
     async def select(self, report: SearchReport, query: str, image: str, context, origin: str):
-        """Review up to six candidates per engine without filling a quota."""
+        """Review each engine's retained candidates without filling a quota."""
         candidates = report.hits
         if not candidates:
             return [], False
@@ -375,6 +379,8 @@ class SearchService:
             data = self.hit_data(hit, number)
             data["preview_available"] = bool(preview)
             records.append(data)
+        displayed = {name: sum(hit.engine == name for hit in selected) for name in report.counts}
+        hidden = {name: total - displayed[name] for name, total in report.counts.items() if total > displayed[name]}
         instructions = {
             key: self.config.get(key, default).replace("五引擎候选", "搜索结果候选")
             for key, default in DEFAULT_PROMPTS.items() if key.startswith("result_")
@@ -382,8 +388,10 @@ class SearchService:
         facts = {
             "query": query, "candidates": records, "confirmed_match": certain,
             "showing_all_candidates": show_all,
-            "max_candidates_per_engine": MAX_CANDIDATES,
+            "candidate_limits": {LABELS[name]: self.candidate_limit(name) for name in report.counts},
             "searched_engines": {LABELS[key]: value for key, value in report.counts.items()},
+            "displayed_candidates": {LABELS[key]: value for key, value in displayed.items()},
+            "hidden_candidates": {LABELS[key]: value for key, value in hidden.items()},
             "failures": {LABELS[key]: value for key, value in report.failures.items()},
             "followup_seconds": max(1, int(self.config.get("candidate_cache_seconds", 600))),
         }
@@ -393,7 +401,9 @@ class SearchService:
             "名字和账号只有数据中有才写，不猜测。不得输出 URL、Markdown 图片或来源链接。"
             "预览图由程序附在对应文字后。confirmed_match=false 时说明只是近似候选、未确认出处，"
             "不要将‘视觉匹配’写成确定身份。showing_all_candidates=true 时必须逐条包含全部候选，"
-            "可以标明不相关，但不能删掉。不要重新选择候选。候选为空时说明没有找到。"
+            "可以标明不相关，但不能删掉。不要重新选择候选。展示列表为空但 searched_engines 有正数时，"
+            "说明已搜到候选，只是本条没有展开，不能说完全没搜到。候选数量不等于可靠匹配数量。"
+            "只有所有引擎都没有候选时才说明未取得候选。"
             "footer 简短提醒可以追问某个引擎的全部候选或指定引擎补搜，并说明缓存有效时间。"
             "统计和失败原因由程序准确附加，不要在文案中重复。\n"
             '只返回 JSON：{"header":"标题或无结果说明","items":[{"id":1,"text":"该条文案"}],'
@@ -409,7 +419,9 @@ class SearchService:
             header, footer = str(result["header"]), str(result["footer"])
         except Exception as exc:
             logger.warning("[reverse_searcher] Reply generation failed: %s", type(exc).__name__)
-            header = "🎯 找图结果" if selected else "暂时没有找到可用的候选。"
+            header = "🎯 找图结果" if selected else (
+                "已搜到候选，本条暂未展开；可指定引擎查看。" if any(report.counts.values()) else "暂时没有取得候选。"
+            )
             if selected and not certain:
                 header += "\n这些是近似候选，尚未确认出处。"
             texts = []
@@ -429,6 +441,9 @@ class SearchService:
                 chain.append(AstrImage.fromBytes(preview))
         counts = " · ".join(f"{LABELS[name]} {report.counts[name]}" for name in ENGINES if name in report.counts)
         chain.append(Plain("\n\n搜索结果候选：" + counts))
+        if hidden:
+            remaining = " · ".join(f"{LABELS[name]} {hidden[name]}" for name in ENGINES if name in hidden)
+            chain.append(Plain("\n暂未展示的候选：" + remaining + "（可指定引擎查看）"))
         if report.failures:
             failures = "；".join(f"{LABELS[name]}：{report.failures[name]}" for name in ENGINES if name in report.failures)
             chain.append(Plain("\n未完成的引擎：" + failures))

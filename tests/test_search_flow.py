@@ -94,6 +94,7 @@ module("search_plugin", __path__=[str(Path(__file__).resolve().parents[1])])
 search = importlib.import_module("search_plugin.reverse_searcher.search")
 main = importlib.import_module("search_plugin.main")
 google = importlib.import_module("search_plugin.reverse_searcher.utils.api_request.google_lens_req")
+ehentai = importlib.import_module("search_plugin.reverse_searcher.utils.api_request.ehentai_req")
 
 
 class Event:
@@ -338,6 +339,118 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([value async for value in plugin.prepare_search_request(event)], [])
         self.assertTrue(event.get_extra("reverse_search_requested"))
         self.assertFalse(plugin.pending_search)
+
+    async def test_engine_limits_and_cache_duration_follow_config(self):
+        config = {f"{engine}_max_results": i + 1 for i, engine in enumerate(search.ENGINES)}
+        config["candidate_cache_seconds"] = 95
+        service = search.SearchService(config)
+        async def many(engine, image):
+            if engine == "animetrace":
+                return SimpleNamespace(raw=[SimpleNamespace(characters=[
+                    SimpleNamespace(name=str(i), work="作品") for i in range(10)
+                ])])
+            return response(engine, 10)
+        service._search_one = AsyncMock(side_effect=many)
+        report = await service.search(b"image", list(search.ENGINES))
+        self.assertEqual(report.counts, {engine: i + 1 for i, engine in enumerate(search.ENGINES)})
+        before = time.monotonic()
+        service.remember(("chat", "user"), b"image", report, "搜图")
+        self.assertGreaterEqual(service.session(("chat", "user")).expires_at, before + 95)
+        self.assertLess(service.session(("chat", "user")).expires_at, time.monotonic() + 96)
+
+    async def test_configured_limits_reach_quantity_parameters(self):
+        service = search.SearchService({"saucenao_max_results": 9, "google_max_results": 7, "yandex_max_results": 4})
+        client = SimpleNamespace(search=AsyncMock(return_value=response("google")))
+        with patch.object(search, "SauceNAO", return_value=client) as factory:
+            await service._search_one("saucenao", b"image")
+            self.assertEqual(factory.call_args.kwargs["numres"], 9)
+        with patch.object(search, "GoogleLens", return_value=client):
+            await service._search_one("google", b"image")
+            self.assertEqual(client.search.call_args.kwargs["max_results"], 7)
+        with patch.object(search, "Yandex", return_value=client):
+            await service._search_one("yandex", b"image")
+            self.assertEqual(client.search.call_args.kwargs["max_results"], 4)
+
+    async def test_hidden_low_match_candidates_keep_counts_and_no_match_is_not_no_results(self):
+        service = self.service()
+        llm = provider({"engine": "animetrace", "uncertain": False}, {"ids": [], "certain": False},
+                       {"ids": [], "certain": False}, {"header": "找到近似候选", "items": [
+                           {"id": 1, "text": "Google 候选"}, {"id": 2, "text": "Yandex 候选"}], "footer": "可以追问"})
+        report, selected, certain = await service.run_search(b"image", "找角色", llm, "chat")
+        service._preview_bytes = AsyncMock(return_value=None)
+        chain = await service.result_chain(report, selected, "找角色", llm, "chat", certain=certain)
+        text = "".join(part.text for part in chain if isinstance(part, Plain))
+        self.assertIn("搜索结果候选：AnimeTrace 1 · Google Lens 2 · Yandex 2", text)
+        self.assertIn("暂未展示的候选：AnimeTrace 1 · Google Lens 1 · Yandex 1", text)
+        llm.llm_generate.side_effect = RuntimeError("offline")
+        chain = await service.result_chain(report, [], "找角色", llm, "chat")
+        self.assertIn("已搜到候选", chain[0].text)
+        self.assertNotIn("没有取得候选", chain[0].text)
+
+    async def test_same_message_additional_engine_retains_full_statistics(self):
+        service = self.service()
+        service.notice = AsyncMock(return_value="")
+        service.result_chain = AsyncMock(return_value=[Plain("候选")])
+        image = Image()
+        image.convert_to_base64 = AsyncMock(return_value="aW1hZ2U=")
+        event = Event("查 Google 和 Yandex 的候选", [image])
+        tool = main.ReverseSearchTool()
+        tool.inject_service(service, provider())
+        await tool.call(context(event), engine="google", show_all=True)
+        await tool.call(context(event), engine="yandex", show_all=True)
+        report, selected = service.result_chain.call_args.args[:2]
+        self.assertEqual(report.counts, {"google": 2, "yandex": 2})
+        self.assertTrue(all(hit.engine == "yandex" for hit in selected))
+        image.convert_to_base64.assert_awaited_once()
+        later = Event("Google的全部结果")
+        await tool.call(context(later), engine="google", show_all=True)
+        self.assertEqual(service.result_chain.call_args.args[0].counts, {"google": 2, "yandex": 2})
+        self.assertEqual(service._search_one.await_count, 2)
+
+    async def test_chat_context_receives_counts_and_failures_for_current_image(self):
+        plugin = main.ReverseSearcherTop3(provider(), {})
+        plugin.search_service.remember(("chat", "user"), b"image",
+            search.SearchReport([], {"ehentai": "HTTP 403"}, {"animetrace": 5, "ehentai": 0}), "找作者")
+        req = SimpleNamespace(extra_user_content_parts=[])
+        await plugin.add_followup_context(Event("这三个呢"), req)
+        text = req.extra_user_content_parts[0].text
+        self.assertIn('"AnimeTrace": 5', text)
+        self.assertIn('"E-Hentai": "HTTP 403"', text)
+
+
+class EHentaiAccessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cookie_reaches_upload_request_and_generic_403_stays_unknown(self):
+        seen = []
+        def handler(request):
+            seen.append(request.headers.get("cookie", ""))
+            self.assertEqual(request.url.path, "/image_lookup.php")
+            return httpx.Response(403, text="<title>Forbidden</title>")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), cookies={"ipb_member_id": "member-test"}) as client:
+            request = ehentai.EHentai(network=SimpleNamespace(client=client))
+            with self.assertRaises(ValueError) as caught:
+                await request.search(file=b"image")
+            self.assertIn("ipb_member_id=member-test", seen[0])
+            self.assertIn("未提供具体拒绝原因", str(caught.exception))
+            self.assertNotIn("未提供登录 Cookie", str(caught.exception))
+            self.assertNotIn("member-test", str(caught.exception))
+
+    async def test_explicit_site_errors_and_missing_cookie_are_reported(self):
+        fixtures = [
+            (403, "Forbidden", {}, "未提供登录 Cookie"),
+            (403, "Challenge", {"cf-mitigated": "challenge"}, "浏览器访问验证"),
+            (200, "You must be logged in to use this feature", {}, "页面要求登录"),
+            (200, "Please wait a bit longer between each file search.", {}, "请求过于频繁"),
+            (403, "Your IP address has been temporarily banned", {}, "临时访问限制"),
+        ]
+        for status, body, headers, expected in fixtures:
+            with self.subTest(status=status, expected=expected):
+                async with httpx.AsyncClient(transport=httpx.MockTransport(
+                    lambda request: httpx.Response(status, text=body, headers=headers)
+                )) as client:
+                    request = ehentai.EHentai(network=SimpleNamespace(client=client))
+                    with self.assertRaises(ValueError) as caught:
+                        await request.search(file=b"image")
+                    self.assertIn(expected, str(caught.exception))
 
 
 class GooglePoolTests(unittest.IsolatedAsyncioTestCase):

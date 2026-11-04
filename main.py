@@ -164,9 +164,15 @@ class ReverseSearcherTop3(Star):
     async def add_followup_context(self, event, req):
         cached = self.search_service.session((event.unified_msg_origin, event.get_sender_id()))
         if cached:
-            engines = "、".join(LABELS[name] for name in cached.report.counts)
+            facts = json.dumps({
+                "用户上次搜图请求": cached.query,
+                "候选数量": {LABELS[name]: count for name, count in cached.report.counts.items()},
+                "未完成的引擎": {LABELS[name]: reason for name, reason in cached.report.failures.items()},
+            }, ensure_ascii=False)
             req.extra_user_content_parts.append(TextPart(text=(
-                f"该发送者上次搜图已缓存，搜索过的引擎：{engines}。用户追问某个引擎的全部候选时，"
+                f"该发送者上次搜图已缓存，实际统计：{facts}。低匹配或未展示不等于没有候选，"
+                "回答数量时使用这份统计，不沿用更早图片的数字。未列出的引擎没有搜索，不编造结果。"
+                "用户追问某个引擎的全部候选时，"
                 "调用 reverse_search_top3，传入 engine 和 show_all=true；也可用同一张图指定其他引擎补搜。"
                 "只有用户提出检索或候选追问才调用。"
             )).mark_as_temp())

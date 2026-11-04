@@ -1,11 +1,31 @@
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+from astrbot.api import logger
 from typing_extensions import override
 
 from ..ext_tools import read_file
 from ..response_parser import EHentaiResponse
 from .base_req import BaseSearchReq
+
+
+def access_issue(response) -> str:
+    """Identify explicit access errors in the search response."""
+    body = response.text.lower()
+    headers = {key.lower(): value.lower() for key, value in response.headers.items()}
+    if "your ip address has been temporarily banned" in body or "you have been temporarily banned" in body:
+        return "页面提示临时访问限制，请等待限制解除"
+    if "please wait a bit longer between each file search" in body or response.status_code == 429:
+        return "请求过于频繁，请稍后再试"
+    if headers.get("cf-mitigated") == "challenge" or (
+        "just a moment" in body and "/cdn-cgi/challenge-platform/" in body
+    ):
+        return "页面要求浏览器访问验证"
+    if ("must be logged in" in body or "you need to log in" in body
+            or "act=login" in response.url.lower()):
+        return "页面要求登录，请检查 E-Hentai Cookie"
+    return ""
 
 
 class EHentai(BaseSearchReq[EHentaiResponse]):
@@ -83,12 +103,20 @@ class EHentai(BaseSearchReq[EHentaiResponse]):
             data["fs_similar"] = "on"
         if self.exp:
             data["fs_exp"] = "on"
+        has_cookie = bool(self._client.cookies)
         resp = await self._send_request(
             method="post",
             endpoint=endpoint,
             data=data,
             files=files,
         )
-        if resp.status_code >= 400:
-            raise ValueError(f"E-Hentai 返回 HTTP {resp.status_code}")
+        issue = access_issue(resp)
+        if resp.status_code >= 400 or issue:
+            label = f"E-Hentai 返回 HTTP {resp.status_code}" if resp.status_code >= 400 else "E-Hentai 搜索未完成"
+            detail = issue or "响应未提供具体拒绝原因"
+            if resp.status_code == 403 and not has_cookie:
+                detail += "；未提供登录 Cookie"
+            logger.warning("[E-Hentai] HTTP %s at %s; cookie_present=%s; %s",
+                           resp.status_code, urlsplit(resp.url).hostname, has_cookie, detail)
+            raise ValueError(f"{label}（{detail}）")
         return EHentaiResponse(resp.text, resp.url)
