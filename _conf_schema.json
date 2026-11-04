@@ -85,12 +85,12 @@
     "default": true
   },
   "serpapi_key": {
-    "description": "SerpAPI Key（Google Lens）",
+    "description": "SerpAPI 单个 Key（Google Lens）；会与多 Key 列表合并去重后轮询",
     "type": "string",
     "default": ""
   },
   "zenserp_key": {
-    "description": "Zenserp Key（Google Lens 备用）",
+    "description": "Zenserp 单个 Key；会与多 Key 列表合并去重后轮询",
     "type": "string",
     "default": ""
   },
@@ -123,5 +123,15 @@
       "max": 3600,
       "step": 60
     }
+  },
+  "serpapi_keys": {
+    "description": "Google Lens 的 SerpAPI Key 列表，每项一个 Key；每次搜索轮换起始 Key，失败时尝试下一个",
+    "type": "list",
+    "default": []
+  },
+  "zenserp_keys": {
+    "description": "Google 搜图的 Zenserp Key 列表，每项一个 Key；与 SerpAPI 凭据共同轮询",
+    "type": "list",
+    "default": []
   }
 }

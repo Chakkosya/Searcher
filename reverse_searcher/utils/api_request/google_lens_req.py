@@ -1,8 +1,6 @@
-import asyncio
 import json
 from typing import Any
 
-import httpx
 from astrbot.api import logger
 from typing_extensions import override
 
@@ -10,11 +8,8 @@ from ..response_parser.google_lens_parser import GoogleLensResponse
 from .base_req import BaseSearchReq
 
 
-class SearchAPIError(Exception):
-    """API 业务错误（4xx：Key 无效、额度用完等）。
-
-    这类错误重试或切换备引擎无意义（换引擎同样没有有效 Key），直接上抛。
-    """
+class SearchAPIError(ValueError):
+    """API 请求失败，可继续尝试池中的其他凭据。"""
 
 
 class GoogleLensSerpApi(BaseSearchReq[GoogleLensResponse]):
@@ -74,13 +69,13 @@ class GoogleLensSerpApi(BaseSearchReq[GoogleLensResponse]):
     async def _fetch_serpapi(self, params: dict) -> dict:
         """调用 SerpApi 搜索接口并返回 JSON 结果"""
         resp = await self._client.get("https://serpapi.com/search", params=params)
-        if 400 <= resp.status_code < 500:
-            raise SearchAPIError(
-                f"SerpApi 请求被拒（HTTP {resp.status_code}）："
-                f"{resp.text[:200]}。请检查 api_key 是否有效或额度是否用完"
-            )
-        resp.raise_for_status()
-        return resp.json()
+        if resp.status_code >= 400:
+            raise SearchAPIError(f"SerpAPI 返回 HTTP {resp.status_code}")
+        data = resp.json()
+        if data.get("error"):
+            detail = str(data["error"]).replace(self.api_key, "[redacted]")[:160]
+            raise SearchAPIError(f"SerpAPI：{detail}")
+        return data
 
 
 class GoogleLensZenserp(BaseSearchReq[GoogleLensResponse]):
@@ -134,95 +129,51 @@ class GoogleLensZenserp(BaseSearchReq[GoogleLensResponse]):
         resp = await self._client.get(
             "https://app.zenserp.com/api/v2/search", headers=headers, params=params
         )
-        if 400 <= resp.status_code < 500:
-            raise SearchAPIError(
-                f"Zenserp 请求被拒（HTTP {resp.status_code}）："
-                f"{resp.text[:200]}。请检查 zenserp_key 是否有效或额度是否用完"
-            )
-        resp.raise_for_status()
-        return resp.json()
+        if resp.status_code >= 400:
+            raise SearchAPIError(f"Zenserp 返回 HTTP {resp.status_code}")
+        data = resp.json()
+        if data.get("error"):
+            detail = str(data["error"]).replace(self.api_key, "[redacted]")[:160]
+            raise SearchAPIError(f"Zenserp：{detail}")
+        return data
 
 
 class GoogleLens(BaseSearchReq[GoogleLensResponse]):
-    """Google Lens 搜索编排器。
-
-    按优先级选择子引擎：
-        1. SerpApi (google_lens) — 主引擎
-        2. Zenserp (google_reverse_image) — 备引擎
-
-    主引擎失败时会自动切换到备引擎。
-    """
+    """轮流使用 Google 搜索 API 凭据，失败后继续尝试下一个。"""
 
     def __init__(self, network: Any = None, **kwargs: Any):
-        # 转发共享 network 给编排器自身及子引擎，避免 proxy/timeout 配置失效和 client 泄漏
         super().__init__("https://google.com", network=network)
-        self.api_keys = kwargs.get("api_keys", {})
-        self.serpapi_key = self.api_keys.get("serpapi") or kwargs.get("serpapi_key")
-        self.zenserp_key = self.api_keys.get("zenserp") or kwargs.get("zenserp_key")
-
-        self.primary = None
-        self.backup = None
-
-        if self.serpapi_key:
-            self.primary = GoogleLensSerpApi(
-                self.serpapi_key, network=network, **kwargs
-            )
-            logger.info("[GoogleLens] Primary Engine: SerpApi (Google Lens)")
-
-        if self.zenserp_key:
-            self.backup = GoogleLensZenserp(self.zenserp_key, network=network, **kwargs)
-            logger.info("[GoogleLens] Backup Engine: Zenserp (Google Reverse Image)")
-
-        if not self.primary and not self.backup:
-            logger.warning(
-                "[GoogleLens] No API keys configured. Functionality disabled."
-            )
+        self.engines = []
+        api_keys = kwargs.get("api_keys", {})
+        for provider, engine_class in (("serpapi", GoogleLensSerpApi), ("zenserp", GoogleLensZenserp)):
+            keys = []
+            for key in [api_keys.get(provider) or kwargs.get(f"{provider}_key"),
+                        *(kwargs.get(f"{provider}_keys") or [])]:
+                if isinstance(key, str) and key.strip() and key.strip() not in keys:
+                    keys.append(key.strip())
+            for number, key in enumerate(keys, 1):
+                self.engines.append((f"{provider} #{number}", engine_class(key, network=network or self)))
+        if self.engines:
+            start = kwargs.get("start_index", 0) % len(self.engines)
+            self.engines = self.engines[start:] + self.engines[:start]
 
     @override
     async def search(
         self, file: bytes | None = None, url: str | None = None, **kwargs: Any
     ) -> GoogleLensResponse:
-        """执行搜索，主引擎优先，失败后自动降级到备引擎。
-
-        策略:
-            1. 尝试主引擎 (SerpApi)
-            2. 连接错误时重试一次
-            3. 仍失败则切换到备引擎 (Zenserp)
-            4. 全部失败则抛 RuntimeError
-        """
-        # 1. Try Primary (if available)
-        if self.primary:
+        """同一次搜图只上传一次图片，每组 API 凭据最多尝试一次。"""
+        if not self.engines:
+            raise ValueError("未配置 SerpAPI/Zenserp Key")
+        if not url:
+            if not file:
+                raise ValueError("请提供图片文件或 URL")
+            url = await self._upload_image(file)
+        failures = []
+        for label, engine in self.engines:
             try:
-                return await self._try_search(self.primary, file, url, **kwargs)
-            except SearchAPIError:
-                # 4xx 业务错误（Key 无效/额度用完）：重试与切换备引擎都无意义，直接上抛
-                raise
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as e:
-                logger.warning(
-                    f"[GoogleLens] Primary Connection Error: {e}. Retrying once..."
-                )
-                try:
-                    await asyncio.sleep(1)
-                    return await self._try_search(self.primary, file, url, **kwargs)
-                except SearchAPIError:
-                    raise
-                except Exception as retry_e:
-                    logger.error(f"[GoogleLens] Primary Retry Failed: {retry_e}")
-            except Exception as e:
-                logger.error(f"[GoogleLens] Primary Engine Failed: {e}")
-
-        # 2. Try Backup (if available)
-        if self.backup:
-            logger.warning("[GoogleLens] Switching to Backup Engine (Zenserp)...")
-            try:
-                return await self._try_search(self.backup, file, url, **kwargs)
-            except Exception as e:
-                logger.error(f"[GoogleLens] Backup Engine Failed: {e}")
-
-        raise RuntimeError(
-            "Google Lens Search Failed: All configured engines exhausted."
-        )
-
-    async def _try_search(self, engine, file, url, **kwargs):
-        """委托给子引擎执行搜索"""
-        return await engine.search(file=file, url=url, **kwargs)
+                return await engine.search(url=url, **kwargs)
+            except Exception as exc:
+                detail = str(exc) if isinstance(exc, SearchAPIError) else type(exc).__name__
+                failures.append(f"{label}：{detail}")
+                logger.warning("[GoogleLens] %s failed: %s", label, detail)
+        raise RuntimeError("Google Lens API 均失败：" + "；".join(failures))

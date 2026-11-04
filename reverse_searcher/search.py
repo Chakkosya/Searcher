@@ -30,6 +30,7 @@ LABELS = {
     "yandex": "Yandex",
 }
 GENERAL_ENGINES = ("google", "yandex")
+MAX_CANDIDATES = 6
 
 
 def parse_json(text: str) -> dict:
@@ -48,6 +49,7 @@ class SearchHit:
     group: str = ""
     preview_url: str = ""
     thumbnail_url: str = ""
+
     @property
     def evidence(self) -> str:
         if self.similarity:
@@ -111,8 +113,10 @@ def _from_response(engine: str, response) -> list[SearchHit]:
             for character in item.characters:
                 rank += 1
                 hits.append(SearchHit(engine, rank, character.name, source=character.work))
+                if rank == MAX_CANDIDATES:
+                    return hits
         return hits
-    for rank, item in enumerate(response.raw, 1):
+    for rank, item in enumerate(response.raw[:MAX_CANDIDATES], 1):
         source = getattr(item, "source", "") or getattr(item, "index_name", "") or ""
         if engine == "ehentai":
             source = "E-Hentai"
@@ -137,6 +141,7 @@ class SearchService:
     def __init__(self, config: dict):
         self.config = config
         self.sessions: dict[tuple[str, str], SearchSession] = {}
+        self.google_key_index = 0
 
     def session(self, key: tuple[str, str]) -> SearchSession | None:
         now = time.monotonic()
@@ -229,7 +234,7 @@ class SearchService:
                 request = AnimeTrace(network=network, is_multi=False, ai_detect=False)
                 return await request.search(file=image, model="full_game_model_kira")
             if engine == "saucenao":
-                request = SauceNAO(network=network, api_key=config.get("saucenao_api_key") or None, numres=20, minsim=30)
+                request = SauceNAO(network=network, api_key=config.get("saucenao_api_key") or None, numres=MAX_CANDIDATES, minsim=30)
                 return await request.search(file=image)
             if engine == "ehentai":
                 request = EHentai(network=network, is_ex=False, similar=True)
@@ -237,14 +242,15 @@ class SearchService:
             if not config.get("allow_third_party_image_host", True):
                 raise ValueError("本地图片上传临时图床已关闭")
             if engine == "google":
-                serp = config.get("serpapi_key") or None
-                zen = config.get("zenserp_key") or None
-                if not serp and not zen:
-                    raise ValueError("未配置 SerpAPI/Zenserp Key")
-                request = GoogleLens(network=network, serpapi_key=serp, zenserp_key=zen)
-                return await request.search(file=image, country="HK", hl="zh-CN", max_results=5)
+                request = GoogleLens(
+                    network=network, serpapi_key=config.get("serpapi_key"), zenserp_key=config.get("zenserp_key"),
+                    serpapi_keys=config.get("serpapi_keys") or [], zenserp_keys=config.get("zenserp_keys") or [],
+                    start_index=self.google_key_index,
+                )
+                self.google_key_index += 1
+                return await request.search(file=image, country="HK", hl="zh-CN", max_results=MAX_CANDIDATES)
             request = Yandex(network=network, use_ru_fallback=True)
-            return await request.search(file=image, max_results=5)
+            return await request.search(file=image, max_results=MAX_CANDIDATES)
 
     async def search(self, image: bytes, engines: list[str]) -> SearchReport:
         responses = await asyncio.gather(
@@ -271,8 +277,8 @@ class SearchService:
         return SearchReport(hits, failures, counts)
 
     async def select(self, report: SearchReport, query: str, image: str, context, origin: str):
-        """Review the first five candidates per engine without filling a quota."""
-        candidates = [hit for hit in report.hits if hit.rank <= 5]
+        """Review up to six candidates per engine without filling a quota."""
+        candidates = report.hits
         if not candidates:
             return [], False
         records = [self.hit_data(hit, number) for number, hit in enumerate(candidates, 1)]
@@ -376,6 +382,7 @@ class SearchService:
         facts = {
             "query": query, "candidates": records, "confirmed_match": certain,
             "showing_all_candidates": show_all,
+            "max_candidates_per_engine": MAX_CANDIDATES,
             "searched_engines": {LABELS[key]: value for key, value in report.counts.items()},
             "failures": {LABELS[key]: value for key, value in report.failures.items()},
             "followup_seconds": max(1, int(self.config.get("candidate_cache_seconds", 600))),

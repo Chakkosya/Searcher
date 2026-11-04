@@ -19,7 +19,8 @@ from .search import ENGINES, SearchReport, SearchService
 class ReverseSearchTool(FunctionTool[AstrAgentContext]):
     name: str = "reverse_search_top3"
     description: str = (
-        "搜索当前消息或引用消息里的图片，结合画面与意图选择合适的引擎，不确定时由 Google Lens 和 Yandex 补搜。"
+        "搜索当前消息或引用消息里的图片，结合画面与意图选择合适的引擎，每个引擎最多六条候选，"
+        "不确定时由 Google Lens 和 Yandex 补搜。"
         "当用户要找图片出处、"
         "原图、相似图片、作品或角色、图片中的人物身份或公开账号时才调用此工具。"
         "用户追问某个引擎的全部候选时，传 engine 和 show_all=true，自动复用上次图片及缓存，"

@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Generic, TypeVar
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 
 def module(name, **attributes):
@@ -91,6 +93,7 @@ module("astrbot.core.utils.astrbot_path", get_astrbot_data_path=lambda: str(Path
 module("search_plugin", __path__=[str(Path(__file__).resolve().parents[1])])
 search = importlib.import_module("search_plugin.reverse_searcher.search")
 main = importlib.import_module("search_plugin.main")
+google = importlib.import_module("search_plugin.reverse_searcher.utils.api_request.google_lens_req")
 
 
 class Event:
@@ -185,13 +188,13 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.failures["ehentai"], "E-Hentai 返回 HTTP 403")
         self.assertEqual({hit.engine for hit in selected}, {"google", "yandex"})
 
-    async def test_explicit_engine_all_candidates_not_cut_at_five(self):
+    async def test_explicit_engine_candidates_capped_at_six(self):
         service = self.service()
         service._search_one = AsyncMock(return_value=response("yandex", 8))
         llm = provider()
         report, selected, _ = await service.run_search(b"image", "Yandex全部结果", llm, "chat", engine="yandex", show_all=True)
-        self.assertEqual(len(selected), 8)
-        self.assertEqual(report.counts, {"yandex": 8})
+        self.assertEqual(len(selected), 6)
+        self.assertEqual(report.counts, {"yandex": 6})
         llm.llm_generate.assert_not_called()
 
     async def test_cached_followup_is_scoped_and_searches_missing_engine_only(self):
@@ -236,16 +239,16 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await service.notice("search_progress_prompt", llm, "chat", query="搜图"), "正在找图喵")
         self.assertIn("用猫娘语气提示等待", llm.llm_generate.call_args.kwargs["prompt"])
         hits = search._from_response("yandex", response("yandex", 8))
-        report = search.SearchReport(hits, {"ehentai": "E-Hentai 返回 HTTP 403"}, {"yandex": 8, "ehentai": 0})
+        report = search.SearchReport(hits, {"ehentai": "E-Hentai 返回 HTTP 403"}, {"yandex": 6, "ehentai": 0})
         llm.llm_generate.return_value = SimpleNamespace(completion_text=json.dumps({
-            "header": "🎯 近似候选", "items": [{"id": n, "text": f"🌐 平台：example.com\\n🔑 关键词：{n}"} for n in range(1, 9)],
+            "header": "🎯 近似候选", "items": [{"id": n, "text": f"🌐 平台：example.com\\n🔑 关键词：{n}"} for n in range(1, 7)],
             "footer": "可以继续追问其他引擎的全部候选。",
         }))
         service._preview_bytes = AsyncMock(return_value=b"preview")
         chain = await service.result_chain(report, hits, "全部结果", llm, "chat", show_all=True)
-        self.assertEqual(sum(isinstance(part, Image) for part in chain), 8)
+        self.assertEqual(sum(isinstance(part, Image) for part in chain), 6)
         text = "".join(part.text for part in chain if isinstance(part, Plain))
-        self.assertIn("搜索结果候选：E-Hentai 0 · Yandex 8", text)
+        self.assertIn("搜索结果候选：E-Hentai 0 · Yandex 6", text)
         self.assertIn("未完成的引擎：E-Hentai：E-Hentai 返回 HTTP 403", text)
         self.assertNotIn("五引擎", text)
         self.assertNotIn("AnimeTrace 0", text)
@@ -292,11 +295,41 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         hits = search._from_response("yandex", response("yandex", 8))
         llm = provider({"header": "结果", "items": [{"id": 1, "text": "只写一条"}], "footer": ""})
         service._preview_bytes = AsyncMock(return_value=None)
-        chain = await service.result_chain(search.SearchReport(hits, {}, {"yandex": 8}), hits,
+        chain = await service.result_chain(search.SearchReport(hits, {}, {"yandex": 6}), hits,
                                            "全部结果", llm, "chat", show_all=True)
         text = "".join(part.text for part in chain if isinstance(part, Plain))
-        for number in range(8):
+        for number in range(6):
             self.assertIn(f"yandex-{number}", text)
+
+    async def test_all_engines_cap_six_and_sixth_candidate_reaches_model(self):
+        service = self.service()
+        async def many(engine, image):
+            if engine == "animetrace":
+                return SimpleNamespace(raw=[SimpleNamespace(characters=[
+                    SimpleNamespace(name=f"角色{number}", work="作品") for number in range(10)
+                ])])
+            return response(engine, 10)
+        service._search_one = AsyncMock(side_effect=many)
+        report = await service.search(b"image", list(search.ENGINES))
+        self.assertEqual(report.counts, {name: 6 for name in search.ENGINES})
+        llm = provider({"ids": [6], "certain": True})
+        selected, _ = await service.select(report, "搜图", "base64://image", llm, "chat")
+        self.assertEqual(selected[0].rank, 6)
+        service.remember(("chat", "user"), b"image", report, "搜图")
+        self.assertEqual(len(service.session(("chat", "user")).report.hits), 30)
+
+    async def test_service_advances_google_rotation_and_requests_six(self):
+        service = search.SearchService({"serpapi_keys": ["one", "two"]})
+        client = SimpleNamespace(search=AsyncMock(return_value=response("google")))
+        with patch.object(search, "GoogleLens", return_value=client) as factory:
+            await service._search_one("google", b"image")
+            await service._search_one("google", b"image")
+        self.assertEqual([call.kwargs["start_index"] for call in factory.call_args_list], [0, 1])
+        self.assertEqual(client.search.call_args.kwargs["max_results"], 6)
+        with patch.object(search, "SauceNAO", return_value=client) as factory:
+            await service._search_one("saucenao", b"image")
+        self.assertEqual(factory.call_args.kwargs["numres"], 6)
+
 
     async def test_keyword_engine_followup_does_not_request_another_image(self):
         plugin = main.ReverseSearcherTop3(provider({"search": True}), {})
@@ -306,6 +339,60 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(event.get_extra("reverse_search_requested"))
         self.assertFalse(plugin.pending_search)
 
+
+class GooglePoolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rotates_keys_and_fails_over_without_uploading_again(self):
+        seen = []
+        def handler(request):
+            key = request.url.params.get("api_key")
+            seen.append(key)
+            if key == "limited":
+                return httpx.Response(429, json={"error": "quota"})
+            return httpx.Response(200, json={"visual_matches": [
+                {"title": "match", "link": "https://example.com/post", "thumbnail": "https://example.com/image.jpg"}
+            ]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            network = SimpleNamespace(client=client)
+            request = google.GoogleLens(network=network, serpapi_key="limited",
+                                        serpapi_keys=["limited", "working"], start_index=0)
+            request._upload_image = AsyncMock(return_value="https://example.com/image.jpg")
+            result = await request.search(file=b"image", max_results=6)
+            self.assertEqual(len(result.raw), 1)
+            self.assertEqual(seen, ["limited", "working"])
+            request._upload_image.assert_awaited_once()
+            seen.clear()
+            request = google.GoogleLens(network=network, serpapi_keys=["limited", "working"], start_index=1)
+            await request.search(url="https://example.com/image.jpg")
+            self.assertEqual(seen, ["working"])
+
+    async def test_json_error_switches_to_zenserp_and_empty_success_stops(self):
+        seen = []
+        def handler(request):
+            seen.append(request.url.host)
+            if request.url.host == "serpapi.com":
+                return httpx.Response(200, json={"error": "invalid key"})
+            self.assertEqual(request.headers["apikey"], "zen-key")
+            return httpx.Response(200, json={"image_results": []})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            request = google.GoogleLens(network=SimpleNamespace(client=client),
+                                        serpapi_keys=["serp-key"], zenserp_keys=["zen-key", "unused"])
+            result = await request.search(url="https://example.com/image.jpg")
+            self.assertEqual(result.raw, [])
+            self.assertEqual(seen, ["serpapi.com", "app.zenserp.com"])
+
+    async def test_all_failures_report_status_without_keys(self):
+        def handler(request):
+            if request.url.params.get("api_key") == "secret-one":
+                return httpx.Response(401, text="secret-one invalid")
+            return httpx.Response(200, json={"error": "invalid secret-two"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            request = google.GoogleLens(network=SimpleNamespace(client=client), serpapi_keys=["secret-one", "secret-two"])
+            with self.assertRaises(RuntimeError) as caught:
+                await request.search(url="https://example.com/image.jpg")
+            self.assertIn("HTTP 401", str(caught.exception))
+            self.assertIn("serpapi #2", str(caught.exception))
+            self.assertNotIn("secret-one", str(caught.exception))
+            self.assertNotIn("secret-two", str(caught.exception))
 
 if __name__ == "__main__":
     unittest.main()
